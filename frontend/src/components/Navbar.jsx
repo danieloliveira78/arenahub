@@ -11,6 +11,7 @@ const Navbar = () => {
 
   const nav = [
     { to: "/competicoes", label: "Torneios" },
+    { to: "/ranking", label: "Ranking" },
   ];
 
   return (

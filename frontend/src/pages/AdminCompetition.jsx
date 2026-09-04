@@ -4,8 +4,9 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Shuffle, Trophy, Loader2, Users, Save } from "lucide-react";
+import { Shuffle, Trophy, Loader2, Users, Save, Radio, QrCode } from "lucide-react";
 import { toast } from "sonner";
+import { Link } from "react-router-dom";
 
 export default function AdminCompetition() {
   const { id } = useParams();
@@ -69,7 +70,17 @@ export default function AdminCompetition() {
           <h1 className="text-3xl font-extrabold">{comp.title}</h1>
           <div className="text-slate-400 text-sm mt-1">{comp.type_name} · {regs.length} inscritos</div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <Link to={`/live/sorteio/${id}`}>
+            <Button data-testid="live-sorteio-btn" className="bg-purple-500 hover:bg-purple-400 text-slate-950 font-semibold">
+              <Radio className="w-4 h-4 mr-1"/> Sorteio ao Vivo
+            </Button>
+          </Link>
+          <Link to="/admin/checkin">
+            <Button data-testid="checkin-nav-btn" variant="outline" className="border-slate-700 hover:bg-slate-800">
+              <QrCode className="w-4 h-4 mr-1"/> Check-in
+            </Button>
+          </Link>
           <Button onClick={doDraw} data-testid="draw-btn"
             className={`bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold ${shuffling ? "shuffle-anim":""}`}>
             <Shuffle className="w-4 h-4 mr-1"/> Sortear duplas

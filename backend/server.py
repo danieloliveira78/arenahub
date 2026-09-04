@@ -345,6 +345,7 @@ async def create_registration(body: RegistrationCreate, user=Depends(get_current
     is_free = fee <= 0
 
     reg_id = f"reg_{uuid.uuid4().hex[:10]}"
+    check_in_code = f"chk_{uuid.uuid4().hex[:16]}"
     reg = {
         "registration_id": reg_id,
         "competition_id": body.competition_id,
@@ -358,6 +359,8 @@ async def create_registration(body: RegistrationCreate, user=Depends(get_current
         "fee": fee,
         "payment_status": "free" if is_free else "pending",
         "checkout_session_id": None,
+        "check_in_code": check_in_code,
+        "checked_in": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.registrations.insert_one(reg)
@@ -370,7 +373,7 @@ async def create_registration(body: RegistrationCreate, user=Depends(get_current
         try:
             amount_cents = int(round(fee * 100))
             product_name = f"Inscrição: {comp['title']}"
-            session = stripe.checkout.Session.create(
+            base_args = dict(
                 line_items=[{
                     "price_data": {
                         "currency": "brl",
@@ -385,6 +388,13 @@ async def create_registration(body: RegistrationCreate, user=Depends(get_current
                 metadata={"registration_id": reg_id, "user_id": user["user_id"],
                           "competition_id": body.competition_id},
             )
+            # Try card + PIX first (requires BR-activated Stripe account); fallback to card only.
+            try:
+                session = stripe.checkout.Session.create(
+                    **base_args, payment_method_types=["card", "pix"]
+                )
+            except stripe.error.InvalidRequestError:
+                session = stripe.checkout.Session.create(**base_args)
             session_id = session.id
             checkout_url = session.url
             await db.payment_transactions.insert_one({
@@ -410,6 +420,8 @@ async def _send_confirmation_email(email: str, name: str, comp: dict, reg: dict,
     status_line = ("Pagamento confirmado" if paid else
                    ("Inscrição gratuita confirmada" if reg.get("payment_status") == "free"
                     else "Pagamento pendente"))
+    check_in_code = reg.get("check_in_code", "")
+    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=10&data={check_in_code}"
     html = f"""
     <table role="presentation" width="100%" style="background:#0B0F17;padding:24px">
       <tr><td>
@@ -424,6 +436,12 @@ async def _send_confirmation_email(email: str, name: str, comp: dict, reg: dict,
               <p style="margin:0 0 8px 0"><strong>Local:</strong> {escape(comp.get('location') or 'A definir')}</p>
               <p style="margin:0 0 8px 0"><strong>Premiação:</strong> {escape(comp.get('prize') or '-')}</p>
               <p style="margin:0"><strong>Status:</strong> {escape(status_line)}</p>
+            </div>
+            <div style="background:#1E293B;border-radius:8px;padding:20px;margin-bottom:20px;text-align:center">
+              <p style="margin:0 0 12px 0;color:#22C55E;font-weight:bold">QR Code de Check-in</p>
+              <img src="{qr_url}" alt="QR Check-in" width="220" height="220" style="border-radius:8px;background:#FFF" />
+              <p style="margin:12px 0 0 0;font-family:monospace;color:#94A3B8;font-size:12px">{escape(check_in_code)}</p>
+              <p style="margin:8px 0 0 0;color:#64748B;font-size:12px">Apresente este código na entrada do torneio.</p>
             </div>
             <p style="color:#64748B;font-size:12px;margin:24px 0 0 0">Enviado por {escape(EMAIL_FROM_NAME)}. Nunca solicitamos senhas ou dados de cartão por e-mail.</p>
           </td></tr>
@@ -692,6 +710,81 @@ async def update_match(match_id: str, body: MatchScoreUpdate, admin=Depends(requ
                                                   "team_b_name": winner_team_name}})
     fresh = await db.matches.find_one({"match_id": match_id}, {"_id": 0})
     return fresh
+
+# ---------------- Check-in ----------------
+class CheckInRequest(BaseModel):
+    code: str
+
+@api_router.get("/checkin/{code}")
+async def get_checkin(code: str, admin=Depends(require_admin)):
+    reg = await db.registrations.find_one({"check_in_code": code}, {"_id": 0})
+    if not reg:
+        raise HTTPException(404, "Código inválido")
+    comp = await db.competitions.find_one({"competition_id": reg["competition_id"]}, {"_id": 0})
+    return {"registration": reg, "competition": comp}
+
+@api_router.post("/checkin/{code}")
+async def do_checkin(code: str, admin=Depends(require_admin)):
+    reg = await db.registrations.find_one({"check_in_code": code}, {"_id": 0})
+    if not reg:
+        raise HTTPException(404, "Código inválido")
+    if reg["payment_status"] not in ("paid", "free"):
+        raise HTTPException(400, "Inscrição sem pagamento confirmado")
+    if reg.get("checked_in"):
+        return {"already": True, "registration": reg}
+    await db.registrations.update_one({"check_in_code": code},
+        {"$set": {"checked_in": True, "checked_in_at": datetime.now(timezone.utc).isoformat()}})
+    fresh = await db.registrations.find_one({"check_in_code": code}, {"_id": 0})
+    return {"already": False, "registration": fresh}
+
+# ---------------- Rankings ----------------
+@api_router.get("/rankings")
+async def rankings():
+    """Global rankings aggregated from finished matches and championship winners."""
+    matches = await db.matches.find(
+        {"winner": {"$in": ["A", "B"]}}, {"_id": 0}
+    ).to_list(5000)
+
+    wins = {}  # player_name -> win count
+    finals_won = {}  # player_name -> championship count
+
+    # Precompute team -> players lookup
+    team_ids = set()
+    for m in matches:
+        if m.get("team_a_id"): team_ids.add(m["team_a_id"])
+        if m.get("team_b_id"): team_ids.add(m["team_b_id"])
+    if team_ids:
+        teams_docs = await db.teams.find({"team_id": {"$in": list(team_ids)}}, {"_id": 0}).to_list(5000)
+    else:
+        teams_docs = []
+    team_players = {t["team_id"]: t.get("players") or [] for t in teams_docs}
+
+    # Determine max round per competition (=final)
+    max_round_per_comp = {}
+    for m in matches:
+        c = m["competition_id"]
+        if c not in max_round_per_comp or m["round"] > max_round_per_comp[c]:
+            max_round_per_comp[c] = m["round"]
+
+    for m in matches:
+        winner_team_id = m["team_a_id"] if m["winner"] == "A" else m["team_b_id"]
+        players = team_players.get(winner_team_id, [])
+        for p in players:
+            wins[p] = wins.get(p, 0) + 1
+        if m["round"] == max_round_per_comp.get(m["competition_id"]):
+            for p in players:
+                finals_won[p] = finals_won.get(p, 0) + 1
+
+    ranking_list = []
+    all_players = set(wins.keys()) | set(finals_won.keys())
+    for p in all_players:
+        ranking_list.append({
+            "player": p,
+            "wins": wins.get(p, 0),
+            "championships": finals_won.get(p, 0),
+        })
+    ranking_list.sort(key=lambda x: (-x["championships"], -x["wins"], x["player"]))
+    return ranking_list
 
 # ---------------- Seed default data ----------------
 @api_router.post("/seed-defaults")
