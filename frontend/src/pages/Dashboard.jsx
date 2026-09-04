@@ -7,8 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Trophy, Calendar, ExternalLink, Save, Camera, Loader2 } from "lucide-react";
-import { toast } from "sonner";
+import { Trophy, Calendar, ExternalLink, Save, Camera, Loader2 } from "lucide-react";import { toast } from "sonner";
 import { resizeImageToDataUrl } from "@/lib/resizeImage";
 
 export default function Dashboard() {
@@ -131,7 +130,20 @@ export default function Dashboard() {
               <div className="text-sm text-slate-400 flex items-center gap-2 mt-3">
                 <Calendar className="w-3.5 h-3.5" /> {r.competition?.start_date}
               </div>
-              <div className="text-xs text-slate-500 mt-1">Modalidade: {r.mode === "individual" ? "Individual (aguardando sorteio)" : `Dupla com ${r.partner_name}`}</div>
+              {r.mode === "dupla" && r.partner_name ? (
+                <div className="mt-3 pt-3 border-t border-slate-800 flex items-center gap-3">
+                  <Avatar className="w-10 h-10 border border-slate-700">
+                    <AvatarImage src={r.partner_avatar} className="object-cover"/>
+                    <AvatarFallback className="bg-cyan-500/20 text-cyan-300 text-sm font-bold">{r.partner_name?.[0]}</AvatarFallback>
+                  </Avatar>
+                  <div>
+                    <div className="text-xs text-slate-500 uppercase tracking-widest font-mono">Sua dupla</div>
+                    <div className="font-semibold text-slate-200">{r.partner_name}</div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-xs text-slate-500 mt-1">Modalidade: {r.mode === "individual" ? "Individual (aguardando sorteio)" : "Dupla"}</div>
+              )}
             </Link>
           ))}
         </div>

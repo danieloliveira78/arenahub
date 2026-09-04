@@ -11,6 +11,8 @@ import { Trophy, Calendar, MapPin, Users, DollarSign, Loader2, MessageCircle } f
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
 import { ShareButtons } from "@/components/ShareButtons";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import StoryCard from "@/components/StoryCard";
 
 export default function CompetitionDetail() {
   const { id } = useParams();
@@ -104,13 +106,52 @@ export default function CompetitionDetail() {
               <div className="grid sm:grid-cols-2 gap-3">
                 {teams.map(t => (
                   <div key={t.team_id} data-testid={`team-${t.team_id}`} className="bg-slate-900/60 border border-slate-800 rounded-xl p-4">
-                    <div className="text-xs text-emerald-400 font-mono uppercase mb-1">Dupla</div>
-                    <div className="font-semibold">{t.name}</div>
+                    <div className="text-xs text-emerald-400 font-mono uppercase mb-2">Dupla</div>
+                    <div className="flex items-center gap-3">
+                      <div className="flex -space-x-2">
+                        {(t.players || []).map((p, i) => (
+                          <Avatar key={i} className="w-10 h-10 border-2 border-slate-900">
+                            <AvatarImage src={t.players_avatars?.[i]} className="object-cover"/>
+                            <AvatarFallback className="bg-emerald-500/20 text-emerald-300 text-xs font-bold">{p?.[0]}</AvatarFallback>
+                          </Avatar>
+                        ))}
+                      </div>
+                      <div className="font-semibold text-sm">{t.name}</div>
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
           )}
+
+          {(() => {
+            // Find champion (final match with winner)
+            if (roundKeys.length === 0) return null;
+            const finalRound = rounds[roundKeys[roundKeys.length - 1]] || [];
+            const final = finalRound[0];
+            if (!final || !final.winner) return null;
+            const champName = final.winner === "A" ? final.team_a_name : final.team_b_name;
+            const champTeamId = final.winner === "A" ? final.team_a_id : final.team_b_id;
+            const champTeam = teams.find(t => t.team_id === champTeamId);
+            const champAvatar = champTeam?.players_avatars?.[0];
+            return (
+              <div className="mb-10 bg-gradient-to-br from-amber-500/10 via-slate-900 to-emerald-500/5 border border-amber-500/40 rounded-2xl p-6">
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div className="text-6xl">🏆</div>
+                  <div className="flex-1 min-w-[200px]">
+                    <div className="text-xs font-mono uppercase tracking-widest text-amber-400 mb-1">Grande Campeão</div>
+                    <div className="text-2xl font-extrabold">{champName}</div>
+                  </div>
+                  <StoryCard
+                    playerName={champName}
+                    playerAvatar={champAvatar}
+                    competitionTitle={comp.title}
+                    hashtag={(comp.type_name || "").replace(/\s+/g, "").toLowerCase() + "arenahub"}
+                  />
+                </div>
+              </div>
+            );
+          })()}
 
           {matches.length > 0 && (
             <div>

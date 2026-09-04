@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
-import { Trophy, Plus, Trash2, Settings, ExternalLink, DollarSign } from "lucide-react";
+import { Trophy, Plus, Trash2, Settings, ExternalLink, DollarSign, Users } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Admin() {
@@ -31,11 +31,18 @@ export default function Admin() {
           <div className="text-xs font-mono uppercase tracking-widest text-amber-400 mb-2">Painel Administrativo</div>
           <h1 className="text-3xl sm:text-4xl font-extrabold">Gestão de torneios</h1>
         </div>
-        <Link to="/admin/financeiro">
-          <Button data-testid="go-finance-btn" variant="outline" className="border-slate-700 hover:bg-slate-800">
-            <DollarSign className="w-4 h-4 mr-1"/> Painel Financeiro
-          </Button>
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          <Link to="/admin/usuarios">
+            <Button data-testid="go-users-btn" variant="outline" className="border-slate-700 hover:bg-slate-800">
+              <Users className="w-4 h-4 mr-1"/> Usuários
+            </Button>
+          </Link>
+          <Link to="/admin/financeiro">
+            <Button data-testid="go-finance-btn" variant="outline" className="border-slate-700 hover:bg-slate-800">
+              <DollarSign className="w-4 h-4 mr-1"/> Financeiro
+            </Button>
+          </Link>
+        </div>
       </div>
 
       <Tabs defaultValue="competitions">

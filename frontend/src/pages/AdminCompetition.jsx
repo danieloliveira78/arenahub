@@ -8,9 +8,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Shuffle, Trophy, Loader2, Users, Save, Radio, QrCode, Pencil, Download } from "lucide-react";
+import { Shuffle, Trophy, Loader2, Users, Save, Radio, QrCode, Pencil, Download, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "react-router-dom";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 export default function AdminCompetition() {
   const { id } = useParams();
@@ -142,22 +143,7 @@ export default function AdminCompetition() {
         </div>
         <div className="grid md:grid-cols-2 gap-3">
           {regs.map(r => (
-            <div key={r.registration_id} data-testid={`admin-reg-${r.registration_id}`}
-              className="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex justify-between">
-              <div>
-                <div className="font-semibold">{r.user_name}</div>
-                <div className="text-xs text-slate-500">{r.user_email} · {r.phone}</div>
-                <div className="text-xs text-slate-400 mt-1">
-                  {r.mode === "individual" ? "Individual (para sorteio)" : `Dupla com ${r.partner_name || "?"}`}
-                </div>
-              </div>
-              <Badge className={`h-fit border ${
-                (r.payment_status === "paid" || r.payment_status === "free")
-                  ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
-                  : "bg-amber-500/20 text-amber-300 border-amber-500/30"}`}>
-                {r.payment_status}
-              </Badge>
-            </div>
+            <RegRow key={r.registration_id} r={r} onChange={load} />
           ))}
         </div>
       </section>
@@ -169,8 +155,18 @@ export default function AdminCompetition() {
           <div className="grid md:grid-cols-3 gap-3">
             {teams.map(t => (
               <div key={t.team_id} className="bg-slate-900/70 border border-slate-800 rounded-xl p-4">
-                <div className="text-xs text-emerald-400 font-mono uppercase">Time</div>
-                <div className="font-semibold">{t.name}</div>
+                <div className="text-xs text-emerald-400 font-mono uppercase mb-2">Time</div>
+                <div className="flex items-center gap-3">
+                  <div className="flex -space-x-2">
+                    {(t.players || []).map((p, i) => (
+                      <Avatar key={i} className="w-10 h-10 border-2 border-slate-900">
+                        <AvatarImage src={t.players_avatars?.[i]} className="object-cover"/>
+                        <AvatarFallback className="bg-emerald-500/20 text-emerald-300 text-xs font-bold">{p?.[0]}</AvatarFallback>
+                      </Avatar>
+                    ))}
+                  </div>
+                  <div className="font-semibold text-sm">{t.name}</div>
+                </div>
               </div>
             ))}
           </div>
@@ -206,6 +202,103 @@ export default function AdminCompetition() {
           </div>
         </section>
       )}
+    </div>
+  );
+}
+
+function RegRow({ r, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({
+    user_name: r.user_name, user_email: r.user_email,
+    mode: r.mode, partner_name: r.partner_name || "",
+    partner_email: r.partner_email || "", phone: r.phone || "",
+    payment_status: r.payment_status, checked_in: r.checked_in,
+  });
+  const save = async () => {
+    try {
+      await api.put(`/admin/registrations/${r.registration_id}`, form);
+      toast.success("Inscrição atualizada");
+      setOpen(false); onChange();
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+  };
+  const del = async () => {
+    if (!confirm("Excluir esta inscrição?")) return;
+    try {
+      await api.delete(`/admin/registrations/${r.registration_id}`);
+      toast.success("Inscrição excluída"); onChange();
+    } catch (e) { toast.error("Erro"); }
+  };
+  return (
+    <div data-testid={`admin-reg-${r.registration_id}`}
+      className="bg-slate-900/70 border border-slate-800 rounded-xl p-4">
+      <div className="flex justify-between items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="font-semibold truncate">{r.user_name}</div>
+          <div className="text-xs text-slate-500 truncate">{r.user_email} · {r.phone}</div>
+          <div className="text-xs text-slate-400 mt-1">
+            {r.mode === "individual" ? "Individual (para sorteio)" : `Dupla com ${r.partner_name || "?"}`}
+          </div>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <Badge className={`h-fit border ${
+            (r.payment_status === "paid" || r.payment_status === "free")
+              ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+              : r.payment_status === "refunded"
+                ? "bg-purple-500/20 text-purple-300 border-purple-500/30"
+                : "bg-amber-500/20 text-amber-300 border-amber-500/30"}`}>
+            {r.payment_status}
+          </Badge>
+          {r.checked_in && <Badge className="bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px]">CHECK-IN OK</Badge>}
+        </div>
+      </div>
+      <div className="mt-3 flex gap-2">
+        <Button size="sm" variant="outline" onClick={()=>setOpen(true)} data-testid={`edit-reg-${r.registration_id}`}
+          className="border-slate-700 hover:bg-slate-800"><Pencil className="w-3 h-3 mr-1"/> Editar</Button>
+        <Button size="sm" variant="outline" onClick={del} data-testid={`del-reg-${r.registration_id}`}
+          className="border-red-800/40 text-red-300 hover:bg-red-950/40"><Trash2 className="w-3 h-3"/></Button>
+      </div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="bg-slate-900 border-slate-800 text-slate-100">
+          <DialogHeader><DialogTitle>Editar inscrição</DialogTitle></DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="col-span-2"><Label>Nome</Label>
+              <Input value={form.user_name} onChange={e=>setForm(f=>({...f, user_name:e.target.value}))} className="bg-slate-800 border-slate-700"/></div>
+            <div className="col-span-2"><Label>E-mail</Label>
+              <Input value={form.user_email} onChange={e=>setForm(f=>({...f, user_email:e.target.value}))} className="bg-slate-800 border-slate-700"/></div>
+            <div><Label>Modalidade</Label>
+              <Select value={form.mode} onValueChange={v=>setForm(f=>({...f, mode:v}))}>
+                <SelectTrigger className="bg-slate-800 border-slate-700"><SelectValue/></SelectTrigger>
+                <SelectContent className="bg-slate-900 border-slate-800 text-slate-100">
+                  <SelectItem value="individual">Individual</SelectItem>
+                  <SelectItem value="dupla">Dupla</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div><Label>Status pagamento</Label>
+              <Select value={form.payment_status} onValueChange={v=>setForm(f=>({...f, payment_status:v}))}>
+                <SelectTrigger className="bg-slate-800 border-slate-700"><SelectValue/></SelectTrigger>
+                <SelectContent className="bg-slate-900 border-slate-800 text-slate-100">
+                  <SelectItem value="free">free</SelectItem>
+                  <SelectItem value="paid">paid</SelectItem>
+                  <SelectItem value="pending">pending</SelectItem>
+                  <SelectItem value="refunded">refunded</SelectItem>
+                  <SelectItem value="failed">failed</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div><Label>Parceiro (nome)</Label>
+              <Input value={form.partner_name} onChange={e=>setForm(f=>({...f, partner_name:e.target.value}))} className="bg-slate-800 border-slate-700"/></div>
+            <div><Label>Parceiro (e-mail)</Label>
+              <Input value={form.partner_email} onChange={e=>setForm(f=>({...f, partner_email:e.target.value}))} className="bg-slate-800 border-slate-700"/></div>
+            <div className="col-span-2"><Label>Telefone</Label>
+              <Input value={form.phone} onChange={e=>setForm(f=>({...f, phone:e.target.value}))} className="bg-slate-800 border-slate-700"/></div>
+          </div>
+          <DialogFooter>
+            <Button onClick={save} data-testid={`save-reg-${r.registration_id}`}
+              className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold">Salvar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

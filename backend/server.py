@@ -197,6 +197,23 @@ class ProfileUpdate(BaseModel):
     bio: Optional[str] = None
     avatar: Optional[str] = None  # data URL, ~<= 500KB
 
+class RegistrationAdminUpdate(BaseModel):
+    mode: Optional[Literal["individual", "dupla"]] = None
+    partner_name: Optional[str] = None
+    partner_email: Optional[str] = None
+    phone: Optional[str] = None
+    payment_status: Optional[Literal["paid", "free", "pending", "failed", "refunded"]] = None
+    checked_in: Optional[bool] = None
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
+
+class UserAdminUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    is_admin: Optional[bool] = None
+    bio: Optional[str] = None
+    avatar: Optional[str] = None
+
 class RegistrationCreate(BaseModel):
     competition_id: str
     mode: Literal["individual", "dupla"] = "individual"
@@ -450,18 +467,112 @@ async def athlete_profile(player_name: str):
         "partners": partners_list,
     }
 
+async def _avatars_by_email_or_name(emails: list, names: list) -> dict:
+    """Return {email: avatar_url, name: avatar_url} lookup."""
+    users = await db.users.find(
+        {"$or": [{"email": {"$in": emails}}, {"name": {"$in": names}}]},
+        {"_id": 0, "email": 1, "name": 1, "avatar": 1, "picture": 1}
+    ).to_list(2000)
+    by_email = {u.get("email"): (u.get("avatar") or u.get("picture") or "") for u in users if u.get("email")}
+    by_name = {u.get("name"): (u.get("avatar") or u.get("picture") or "") for u in users if u.get("name")}
+    return {"by_email": by_email, "by_name": by_name}
+
 # ---------------- Registrations ----------------
 @api_router.get("/my-registrations")
 async def my_registrations(user=Depends(get_current_user)):
     regs = await db.registrations.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(200)
+    emails = [r.get("partner_email") for r in regs if r.get("partner_email")]
+    names = [r.get("partner_name") for r in regs if r.get("partner_name")]
+    lookup = await _avatars_by_email_or_name(emails, names)
     for r in regs:
         c = await db.competitions.find_one({"competition_id": r["competition_id"]}, {"_id": 0})
         r["competition"] = c
+        r["partner_avatar"] = (
+            lookup["by_email"].get(r.get("partner_email") or "")
+            or lookup["by_name"].get(r.get("partner_name") or "")
+            or ""
+        )
     return regs
 
 @api_router.get("/competitions/{competition_id}/registrations")
 async def competition_registrations(competition_id: str, admin=Depends(require_admin)):
     return await db.registrations.find({"competition_id": competition_id}, {"_id": 0}).to_list(500)
+
+@api_router.put("/admin/registrations/{registration_id}")
+async def admin_update_registration(registration_id: str, body: RegistrationAdminUpdate, admin=Depends(require_admin)):
+    existing = await db.registrations.find_one({"registration_id": registration_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Registration not found")
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    if patch:
+        await db.registrations.update_one({"registration_id": registration_id}, {"$set": patch})
+    fresh = await db.registrations.find_one({"registration_id": registration_id}, {"_id": 0})
+    return fresh
+
+@api_router.delete("/admin/registrations/{registration_id}")
+async def admin_delete_registration(registration_id: str, admin=Depends(require_admin)):
+    await db.registrations.delete_one({"registration_id": registration_id})
+    return {"ok": True}
+
+@api_router.get("/admin/users")
+async def admin_list_users(admin=Depends(require_admin)):
+    users = await db.users.find({}, {"_id": 0, "avatar": 0}).sort("created_at", -1).to_list(2000)
+    for u in users:
+        u["registrations_count"] = await db.registrations.count_documents({"user_id": u["user_id"]})
+    return users
+
+@api_router.put("/admin/users/{user_id}")
+async def admin_update_user(user_id: str, body: UserAdminUpdate, admin=Depends(require_admin)):
+    existing = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "User not found")
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    if patch:
+        await db.users.update_one({"user_id": user_id}, {"$set": patch})
+    fresh = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    return fresh
+
+@api_router.delete("/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, admin=Depends(require_admin)):
+    if user_id == admin["user_id"]:
+        raise HTTPException(400, "Você não pode excluir a si mesmo")
+    await db.users.delete_one({"user_id": user_id})
+    await db.user_sessions.delete_many({"user_id": user_id})
+    await db.registrations.delete_many({"user_id": user_id})
+    return {"ok": True}
+
+@api_router.post("/admin/refund/{session_id}")
+async def admin_refund(session_id: str, admin=Depends(require_admin)):
+    tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if not tx:
+        raise HTTPException(404, "Transação não encontrada")
+    if tx.get("payment_status") != "paid":
+        raise HTTPException(400, "Transação não está paga (não é possível reembolsar)")
+    payment_intent = tx.get("stripe_payment_intent_id")
+    if not payment_intent:
+        # Try to fetch from session
+        try:
+            s = stripe.checkout.Session.retrieve(session_id)
+            payment_intent = s.payment_intent
+        except stripe.error.StripeError as e:
+            raise HTTPException(500, f"Erro Stripe: {e}")
+    if not payment_intent:
+        raise HTTPException(400, "PaymentIntent não localizado")
+    try:
+        refund = stripe.Refund.create(payment_intent=payment_intent)
+    except stripe.error.StripeError as e:
+        raise HTTPException(500, f"Erro ao reembolsar: {e}")
+
+    await db.payment_transactions.update_one(
+        {"session_id": session_id},
+        {"$set": {"payment_status": "refunded", "refund_id": refund.id,
+                  "refunded_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    reg_id = tx.get("registration_id")
+    if reg_id:
+        await db.registrations.update_one({"registration_id": reg_id},
+                                          {"$set": {"payment_status": "refunded"}})
+    return {"ok": True, "refund_id": refund.id, "status": refund.status}
 
 @api_router.post("/registrations")
 async def create_registration(body: RegistrationCreate, user=Depends(get_current_user)):
@@ -644,7 +755,15 @@ async def stripe_webhook(request: Request):
 # ---------------- Teams / Draw ----------------
 @api_router.get("/competitions/{competition_id}/teams")
 async def list_teams(competition_id: str):
-    return await db.teams.find({"competition_id": competition_id}, {"_id": 0}).to_list(200)
+    teams = await db.teams.find({"competition_id": competition_id}, {"_id": 0}).to_list(200)
+    names = []
+    for t in teams:
+        names.extend(t.get("players") or [])
+    lookup = await _avatars_by_email_or_name([], names)
+    by_name = lookup["by_name"]
+    for t in teams:
+        t["players_avatars"] = [by_name.get(p, "") for p in (t.get("players") or [])]
+    return teams
 
 @api_router.post("/competitions/{competition_id}/draw")
 async def draw_teams(competition_id: str, admin=Depends(require_admin)):

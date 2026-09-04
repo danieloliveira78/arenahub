@@ -3,7 +3,8 @@ import { api, API } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Download, DollarSign, Clock, XCircle, TrendingUp } from "lucide-react";
+import { Download, DollarSign, Clock, XCircle, TrendingUp, RotateCcw } from "lucide-react";
+import { toast } from "sonner";
 
 const brl = (v) => `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
 
@@ -33,7 +34,6 @@ export default function Financeiro() {
     const params = new URLSearchParams();
     if (compFilter !== "all") params.set("competition_id", compFilter);
     if (statusFilter !== "all") params.set("status", statusFilter);
-    // Trigger download with cookie/token via fetch then blob
     fetch(`${API}/admin/finance/export?${params.toString()}`, {
       credentials: "include",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -45,6 +45,15 @@ export default function Financeiro() {
         a.href = url; a.download = "financeiro.csv"; a.click();
         window.URL.revokeObjectURL(url);
       });
+  };
+
+  const refund = async (row) => {
+    if (!confirm(`Reembolsar ${row.user_name || row.user_email} — R$ ${row.amount.toFixed(2)}?`)) return;
+    try {
+      await api.post(`/admin/refund/${row.session_id}`);
+      toast.success("Reembolso realizado");
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro no reembolso"); }
   };
 
   return (
@@ -116,6 +125,7 @@ export default function Financeiro() {
                     <th className="text-left px-4 py-3">Atleta</th>
                     <th className="text-right px-4 py-3">Valor</th>
                     <th className="text-center px-4 py-3">Status</th>
+                    <th className="text-right px-4 py-3">Ação</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -126,10 +136,22 @@ export default function Financeiro() {
                       <td className="px-4 py-3">{r.user_name || r.user_email}</td>
                       <td className="px-4 py-3 text-right font-mono">{brl(r.amount)}</td>
                       <td className="px-4 py-3 text-center"><StatusPill status={r.payment_status}/></td>
+                      <td className="px-4 py-3 text-right">
+                        {r.payment_status === "paid" && (
+                          <Button size="sm" variant="outline" onClick={()=>refund(r)}
+                            data-testid={`refund-${r.session_id}`}
+                            className="border-amber-700/40 text-amber-300 hover:bg-amber-950/30">
+                            <RotateCcw className="w-3 h-3 mr-1"/> Reembolsar
+                          </Button>
+                        )}
+                        {r.payment_status === "refunded" && (
+                          <span className="text-xs text-slate-500">Reembolsado</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                   {data.rows.length === 0 && (
-                    <tr><td colSpan="5" className="px-4 py-8 text-center text-slate-500">Nenhuma transação encontrada.</td></tr>
+                    <tr><td colSpan="6" className="px-4 py-8 text-center text-slate-500">Nenhuma transação encontrada.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -156,6 +178,7 @@ const StatusPill = ({ status }) => {
     pending: "bg-amber-500/20 text-amber-300 border-amber-500/30",
     failed:  "bg-red-500/20 text-red-300 border-red-500/30",
     expired: "bg-slate-500/20 text-slate-300 border-slate-500/30",
+    refunded:"bg-purple-500/20 text-purple-300 border-purple-500/30",
   };
   return <Badge className={`border ${map[status] || map.pending}`}>{status}</Badge>;
 };
