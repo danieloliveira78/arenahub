@@ -7,9 +7,10 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Trophy, Calendar, MapPin, Users, DollarSign, Loader2 } from "lucide-react";
+import { Trophy, Calendar, MapPin, Users, DollarSign, Loader2, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/context/AuthContext";
+import { ShareButtons } from "@/components/ShareButtons";
 
 export default function CompetitionDetail() {
   const { id } = useParams();
@@ -63,13 +64,30 @@ export default function CompetitionDetail() {
   }, {});
   const roundKeys = Object.keys(rounds).map(Number).sort((a,b)=>a-b);
 
+  const shareMatch = (m, c) => {
+    const winnerName = m.winner === "A" ? m.team_a_name : m.team_b_name;
+    const text = `🏆 ${c.title}\n${m.team_a_name} ${m.score_a} x ${m.score_b} ${m.team_b_name}\nVencedor: ${winnerName}`;
+    const url = `${window.location.origin}/competicoes/${c.competition_id}`;
+    if (navigator.share) {
+      navigator.share({ text, url }).catch(()=>{});
+    } else {
+      window.open(`https://wa.me/?text=${encodeURIComponent(text + "\n\n" + url)}`, "_blank", "noopener");
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
       <div className="grid lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2">
           <Badge className="mb-3 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">{comp.type_name}</Badge>
           <h1 className="text-3xl sm:text-4xl font-extrabold mb-3" data-testid="detail-title">{comp.title}</h1>
-          <p className="text-slate-400 mb-6">{comp.description || "Cadastre-se e prepare-se para a disputa."}</p>
+          <p className="text-slate-400 mb-4">{comp.description || "Cadastre-se e prepare-se para a disputa."}</p>
+          <div className="mb-6">
+            <ShareButtons
+              text={`🏆 ${comp.title} · ${comp.type_name} · ${comp.start_date}${comp.location ? " · " + comp.location : ""}`}
+              dataTestidPrefix="share-comp"
+            />
+          </div>
 
           <div className="grid sm:grid-cols-2 gap-4 mb-8">
             <InfoCard icon={Calendar} label="Inscrições" value={`${comp.registration_start} → ${comp.registration_end}`} />
@@ -109,6 +127,12 @@ export default function CompetitionDetail() {
                         <MatchLine name={m.team_a_name} score={m.score_a} winner={m.winner === "A"} />
                         <div className="h-px bg-slate-800" />
                         <MatchLine name={m.team_b_name} score={m.score_b} winner={m.winner === "B"} />
+                        {m.winner && (
+                          <button onClick={() => shareMatch(m, comp)} data-testid={`share-match-${m.match_id}`}
+                            className="w-full flex items-center justify-center gap-1 text-xs py-2 border-t border-slate-800 text-slate-400 hover:text-emerald-400 hover:bg-slate-800/40 transition-colors">
+                            <MessageCircle className="w-3 h-3"/> Compartilhar placar
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>

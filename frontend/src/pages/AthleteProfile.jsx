@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Trophy, Award, Users, Calendar, ArrowLeft } from "lucide-react";
+import { ShareButtons } from "@/components/ShareButtons";
 
 export default function AthleteProfile() {
   const { name } = useParams();
@@ -32,6 +33,12 @@ export default function AthleteProfile() {
             <div className="text-xs font-mono uppercase tracking-widest text-emerald-400">Atleta</div>
             <h1 className="text-3xl sm:text-4xl font-extrabold mb-1">{data.player}</h1>
             {data.bio && <p className="text-slate-300 mt-2">{data.bio}</p>}
+            <div className="mt-4">
+              <ShareButtons
+                text={`Confira o perfil de ${data.player} no ArenaHub — ${data.championships} campeonatos, ${data.wins} vitórias em ${data.tournaments} torneios.`}
+                dataTestidPrefix="share-profile"
+              />
+            </div>
           </div>
         </div>
 

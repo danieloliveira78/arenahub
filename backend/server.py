@@ -195,6 +195,7 @@ class CompetitionUpdate(BaseModel):
 
 class ProfileUpdate(BaseModel):
     bio: Optional[str] = None
+    avatar: Optional[str] = None  # data URL, ~<= 500KB
 
 class RegistrationCreate(BaseModel):
     competition_id: str
@@ -384,7 +385,7 @@ async def athlete_profile(player_name: str):
                 history.append({"competition": comp, "team": None, "champion": False, "wins": 0})
         # Try find user for bio
         user = await db.users.find_one({"name": name}, {"_id": 0}) or {}
-        return {"player": name, "bio": user.get("bio", ""), "picture": user.get("picture", ""),
+        return {"player": name, "bio": user.get("bio", ""), "picture": user.get("avatar") or user.get("picture", ""),
                 "wins": 0, "championships": 0, "tournaments": len(history),
                 "history": history, "partners": []}
 
@@ -441,7 +442,7 @@ async def athlete_profile(player_name: str):
     return {
         "player": name,
         "bio": user.get("bio", ""),
-        "picture": user.get("picture", ""),
+        "picture": user.get("avatar") or user.get("picture", ""),
         "wins": wins,
         "championships": championships,
         "tournaments": len(comp_ids),
@@ -706,9 +707,87 @@ async def draw_teams(competition_id: str, admin=Depends(require_admin)):
 
     if teams:
         await db.teams.insert_many([{**t} for t in teams])
-    # Return without ObjectIds
     fresh = await db.teams.find({"competition_id": competition_id}, {"_id": 0}).to_list(500)
+
+    # Notify each registered athlete about their team pairing (fire-and-forget)
+    try:
+        await _notify_draw(comp, fresh)
+    except Exception as e:
+        logger.error(f"draw notify failed: {e}")
     return fresh
+
+async def _notify_draw(comp: dict, teams: list):
+    """Send email to each paid/free registration announcing their team pairing."""
+    # Build source_reg -> team map
+    reg_ids = []
+    for t in teams:
+        reg_ids.extend(t.get("source_registration_ids") or [])
+    if not reg_ids:
+        return
+    regs = await db.registrations.find(
+        {"registration_id": {"$in": reg_ids}}, {"_id": 0}
+    ).to_list(1000)
+    reg_by_id = {r["registration_id"]: r for r in regs}
+    # user names for photo lookup
+    names_involved = set()
+    for t in teams:
+        for p in (t.get("players") or []):
+            names_involved.add(p)
+    users_docs = await db.users.find(
+        {"name": {"$in": list(names_involved)}}, {"_id": 0, "name": 1, "avatar": 1, "picture": 1}
+    ).to_list(1000)
+    photo_by_name = {u["name"]: (u.get("avatar") or u.get("picture") or "") for u in users_docs}
+
+    for t in teams:
+        players = t.get("players") or []
+        for src_reg_id in (t.get("source_registration_ids") or []):
+            r = reg_by_id.get(src_reg_id)
+            if not r:
+                continue
+            partner = next((p for p in players if p != r["user_name"]), "")
+            partner_photo = photo_by_name.get(partner, "") if partner else ""
+            html = _draw_email_html(r["user_name"], comp, t, partner, partner_photo)
+            try:
+                await send_email(
+                    to=r["user_email"],
+                    subject=f"[ArenaHub] Sua dupla em {comp['title']} está definida",
+                    html=html,
+                )
+            except Exception as e:
+                logger.error(f"send draw email to {r['user_email']}: {e}")
+
+def _draw_email_html(name: str, comp: dict, team: dict, partner: str, partner_photo: str) -> str:
+    # Only include partner photo if it's an absolute https URL (data URLs won't pass gate)
+    photo_block = ""
+    if partner_photo and partner_photo.startswith("https://"):
+        photo_block = (
+            f'<img src="{escape(partner_photo)}" alt="{escape(partner)}" width="80" height="80" '
+            f'style="border-radius:50%;object-fit:cover;background:#1E293B" />'
+        )
+    partner_line = (
+        f'<div style="margin-top:12px;font-size:18px;color:#F8FAFC"><strong>{escape(partner)}</strong></div>'
+        if partner else
+        '<div style="margin-top:12px;color:#94A3B8">Você jogará individualmente nesta chave.</div>'
+    )
+    return f"""
+    <table role="presentation" width="100%" style="background:#0B0F17;padding:24px">
+      <tr><td>
+        <table role="presentation" width="100%" style="max-width:560px;margin:0 auto;background:#111827;border-radius:12px;padding:32px;font-family:Arial,sans-serif;color:#F8FAFC">
+          <tr><td>
+            <h1 style="color:#22C55E;font-size:22px;margin:0 0 12px 0">Sorteio realizado!</h1>
+            <p style="color:#94A3B8;margin:0 0 20px 0">Olá {escape(name)}, sua dupla em <strong>{escape(comp['title'])}</strong> foi definida.</p>
+            <div style="background:#1E293B;border-radius:10px;padding:20px;text-align:center">
+              <div style="color:#94A3B8;font-size:12px;text-transform:uppercase;letter-spacing:2px">Seu parceiro(a)</div>
+              {photo_block}
+              {partner_line}
+              <div style="margin-top:16px;color:#94A3B8;font-size:14px">Time: <strong style="color:#22C55E">{escape(team.get('name',''))}</strong></div>
+            </div>
+            <p style="color:#64748B;font-size:12px;margin:24px 0 0 0">Enviado por {escape(EMAIL_FROM_NAME)}. Boa sorte na disputa!</p>
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+    """
 
 @api_router.post("/competitions/{competition_id}/bracket")
 async def generate_bracket(competition_id: str, admin=Depends(require_admin)):
@@ -907,16 +986,110 @@ async def rankings():
             for p in players:
                 finals_won[p] = finals_won.get(p, 0) + 1
 
+    all_players = list(set(wins.keys()) | set(finals_won.keys()))
+    # Look up user avatars/pictures for players
+    users_docs = await db.users.find({"name": {"$in": all_players}}, {"_id": 0, "name": 1, "avatar": 1, "picture": 1}).to_list(1000)
+    user_by_name = {u["name"]: u for u in users_docs}
     ranking_list = []
-    all_players = set(wins.keys()) | set(finals_won.keys())
     for p in all_players:
+        u = user_by_name.get(p, {})
         ranking_list.append({
             "player": p,
             "wins": wins.get(p, 0),
             "championships": finals_won.get(p, 0),
+            "avatar": u.get("avatar") or u.get("picture") or "",
         })
     ranking_list.sort(key=lambda x: (-x["championships"], -x["wins"], x["player"]))
     return ranking_list
+
+# ---------------- Finance (admin) ----------------
+@api_router.get("/admin/finance")
+async def admin_finance(competition_id: Optional[str] = None, status: Optional[str] = None,
+                        admin=Depends(require_admin)):
+    q = {}
+    if competition_id:
+        # Filter payment_transactions by registration_id belonging to this competition
+        regs = await db.registrations.find(
+            {"competition_id": competition_id}, {"_id": 0, "registration_id": 1}
+        ).to_list(5000)
+        q["registration_id"] = {"$in": [r["registration_id"] for r in regs]}
+    if status:
+        q["payment_status"] = status
+    txs = await db.payment_transactions.find(q, {"_id": 0}).sort("created_at", -1).to_list(5000)
+
+    # Attach competition + registration info
+    reg_ids = [t["registration_id"] for t in txs if t.get("registration_id")]
+    regs = await db.registrations.find({"registration_id": {"$in": reg_ids}}, {"_id": 0}).to_list(5000) if reg_ids else []
+    reg_by_id = {r["registration_id"]: r for r in regs}
+    comp_ids = list({r["competition_id"] for r in regs})
+    comps = await db.competitions.find({"competition_id": {"$in": comp_ids}}, {"_id": 0}).to_list(500) if comp_ids else []
+    comp_by_id = {c["competition_id"]: c for c in comps}
+
+    rows = []
+    total_paid = 0.0
+    total_pending = 0.0
+    total_failed = 0.0
+    per_comp = {}
+    for t in txs:
+        r = reg_by_id.get(t.get("registration_id"), {})
+        c = comp_by_id.get(r.get("competition_id"), {})
+        amount = float(t.get("amount") or 0)
+        row = {
+            "session_id": t.get("session_id"),
+            "created_at": t.get("created_at"),
+            "amount": amount,
+            "currency": t.get("currency", "brl"),
+            "payment_status": t.get("payment_status"),
+            "user_name": r.get("user_name", ""),
+            "user_email": r.get("user_email", ""),
+            "competition_id": r.get("competition_id"),
+            "competition_title": c.get("title", ""),
+        }
+        rows.append(row)
+        if t.get("payment_status") == "paid":
+            total_paid += amount
+            comp_key = r.get("competition_id") or "other"
+            per_comp[comp_key] = per_comp.get(comp_key, {"title": c.get("title", "Outros"), "total": 0.0, "count": 0})
+            per_comp[comp_key]["total"] += amount
+            per_comp[comp_key]["count"] += 1
+        elif t.get("payment_status") == "pending":
+            total_pending += amount
+        else:
+            total_failed += amount
+
+    return {
+        "rows": rows,
+        "totals": {"paid": total_paid, "pending": total_pending, "failed": total_failed, "count": len(rows)},
+        "per_competition": [
+            {"competition_id": k, "title": v["title"], "total": v["total"], "count": v["count"]}
+            for k, v in sorted(per_comp.items(), key=lambda x: -x[1]["total"])
+        ],
+    }
+
+@api_router.get("/admin/finance/export")
+async def admin_finance_csv(competition_id: Optional[str] = None, status: Optional[str] = None,
+                             admin=Depends(require_admin)):
+    from fastapi.responses import Response
+    data = await admin_finance(competition_id=competition_id, status=status, admin=admin)
+    lines = ["data,torneio,atleta,email,valor,moeda,status,session_id"]
+    for r in data["rows"]:
+        row = [
+            r["created_at"] or "",
+            (r["competition_title"] or "").replace(",", " "),
+            (r["user_name"] or "").replace(",", " "),
+            r["user_email"] or "",
+            f"{r['amount']:.2f}",
+            r["currency"] or "",
+            r["payment_status"] or "",
+            r["session_id"] or "",
+        ]
+        lines.append(",".join(str(x) for x in row))
+    csv_content = "\n".join(lines)
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="finance.csv"'},
+    )
 
 # ---------------- Seed default data ----------------
 @api_router.post("/seed-defaults")

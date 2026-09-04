@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Trophy, Medal, Award } from "lucide-react";
 
 export default function Ranking() {
@@ -42,7 +43,11 @@ export default function Ranking() {
                  i === 2 ? <Award className="w-5 h-5 text-amber-700"/> :
                  <span className="text-slate-500 font-mono">{i+1}</span>}
               </div>
-              <div className="col-span-7">
+              <div className="col-span-7 flex items-center gap-3">
+                <Avatar className="w-9 h-9 border border-slate-700">
+                  <AvatarImage src={r.avatar} className="object-cover"/>
+                  <AvatarFallback className="bg-emerald-500/20 text-emerald-300 text-sm font-bold">{r.player?.[0]}</AvatarFallback>
+                </Avatar>
                 <div className="font-semibold text-slate-100 hover:text-emerald-400">{r.player}</div>
               </div>
               <div className="col-span-2 text-right">

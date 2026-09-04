@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
-import { Trophy, Plus, Trash2, Settings, ExternalLink } from "lucide-react";
+import { Trophy, Plus, Trash2, Settings, ExternalLink, DollarSign } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Admin() {
@@ -26,9 +26,16 @@ export default function Admin() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10" data-testid="admin">
-      <div className="mb-8">
-        <div className="text-xs font-mono uppercase tracking-widest text-amber-400 mb-2">Painel Administrativo</div>
-        <h1 className="text-3xl sm:text-4xl font-extrabold">Gestão de torneios</h1>
+      <div className="mb-8 flex items-start justify-between flex-wrap gap-4">
+        <div>
+          <div className="text-xs font-mono uppercase tracking-widest text-amber-400 mb-2">Painel Administrativo</div>
+          <h1 className="text-3xl sm:text-4xl font-extrabold">Gestão de torneios</h1>
+        </div>
+        <Link to="/admin/financeiro">
+          <Button data-testid="go-finance-btn" variant="outline" className="border-slate-700 hover:bg-slate-800">
+            <DollarSign className="w-4 h-4 mr-1"/> Painel Financeiro
+          </Button>
+        </Link>
       </div>
 
       <Tabs defaultValue="competitions">
