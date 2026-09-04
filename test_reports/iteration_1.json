@@ -1,0 +1,35 @@
+{
+  "summary": "Backend testing complete for ArenaHub. Wrote pytest suite covering public routes, auth, RBAC, competitions CRUD, free & paid registrations, teams draw, bracket generation, match scoring propagation, my-registrations, and CORS preflight. 20/20 tests pass after fixing one MongoDB _id serialization bug in POST /api/registrations.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/registrations", "issue": "Endpoint returned 500 (ObjectId not iterable) because motor's insert_one mutates dict with _id, which was then returned. Fixed by popping _id after insert."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Review other endpoints for similar _id-mutation risk after insert_one (currently create_type, create_competition already pop _id; registration was missing this).",
+    "Consider making seed-defaults truly idempotent by upsert-on-name rather than only checking count>0 (currently safe).",
+    "CORS is configured with allow_origin_regex='.*' AND allow_credentials=True which browsers reject; the preflight test passes because header echoes back, but real browsers may block cross-origin requests with credentials. Consider explicit allowed origins."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~740 lines; consider splitting routes into modules (auth, competitions, registrations, tournaments, payments, email).",
+    "STRIPE_SECRET_KEY has a hardcoded fallback 'sk_test_emergent' - safe but noisy.",
+    "get_current_user compares expires_at (parsed str) to now(tz-aware) - handled correctly with tzinfo replace.",
+    "In draw_teams, solos filter includes registrations with mode='dupla' that lack partner_name, correct fallback.",
+    "propagate_winner logic uses position parity for slot assignment - matches update_match handler; consistent.",
+    "CORS uses allow_origin_regex='.*' with allow_credentials=True - RFC-noncompliant for browsers; recommend echoing specific Origin."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (fix: pop _id after registrations insert_one)",
+    "/app/backend/tests/backend_test.py (new pytest suite, 20 tests)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (per request)"},
+  "test_credentials": "Sessions created directly in Mongo per /app/auth_testing.md. Admin uses email danieloliveira78@gmail.com. Owner test user tokens created inline in fixtures.",
+  "seed_data_creation": "Test fixtures create TEST_-prefixed competitions and admin/user session rows. Teardown removes competitions, registrations, teams, matches, users and sessions. Also seeds 4 solo confirmed registrations to test draw/bracket.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend fully green. Run: cd /app && python -m pytest backend/tests/backend_test.py -n 0 (must use -n 0 because module-scoped admin_ctx fixture races with parallel workers on the OWNER_EMAIL unique upsert). Stripe checkout is created against real test API and returns real checkout URL; no external UI completion is attempted. Payment status endpoint returns 'pending' initially.",
+  "rca of the issue": "POST /api/registrations returned 500. RCA: motor's insert_one adds `_id: ObjectId` to the passed dict in-place. The function then returned `{'registration': reg, ...}` and FastAPI's jsonable_encoder failed on ObjectId. Fix: `reg.pop('_id', None)` after insert. Reproduction: POST /api/registrations with a valid session token to an existing free competition."
+}

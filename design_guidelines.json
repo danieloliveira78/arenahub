@@ -1,0 +1,150 @@
+{
+  "project_name": "ArenaHub - Plataforma de Gestão de Torneios e Competições",
+  "app_type": "hybrid_fullstack",
+  "locale": "pt-BR",
+  "emotional_archetype": "THE PERFORMANCE PRO & TACTICAL SPORTS",
+  "design_principles": [
+    "Tactical Precision: High contrast dark theme with neon emerald/gold signals for active competition states.",
+    "Bento Grid Energy: Asymmetric cards for featured tournaments, quick stats, and live match ticker.",
+    "Fluid Micro-Interactions: Smooth bracket pan, interactive team draw (sorteio) with shuffle animation, springy button feedback.",
+    "Brazilian Sports Tone: Focused on Futevôlei, Beach Tennis, Futebol de Sabão, Padel, and Volleyball with local payment methods (PIX QR Code & Cartão de Crédito)."
+  ],
+  "typography": {
+    "font_family_heading": "'Outfit', 'Plus Jakarta Sans', sans-serif",
+    "font_family_body": "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    "font_family_mono": "'JetBrains Mono', monospace",
+    "scale": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight",
+      "h3": "text-xl sm:text-2xl font-semibold tracking-normal",
+      "h4": "text-lg sm:text-xl font-semibold",
+      "body": "text-base font-normal leading-relaxed",
+      "caption": "text-xs font-medium uppercase tracking-wider text-slate-400"
+    }
+  },
+  "colors": {
+    "theme": "dark",
+    "background_primary": "#0B0F17",
+    "background_secondary": "#111827",
+    "background_card": "#1E293B",
+    "background_card_hover": "#334155",
+    "border_subtle": "rgba(255, 255, 255, 0.08)",
+    "border_active": "rgba(34, 197, 94, 0.4)",
+    "text_primary": "#F8FAFC",
+    "text_secondary": "#94A3B8",
+    "text_muted": "#64748B",
+    "accent_emerald": "#10B981",
+    "accent_emerald_bright": "#22C55E",
+    "accent_amber": "#F59E0B",
+    "accent_cyan": "#06B6D4",
+    "status": {
+      "open_registration": "#22C55E",
+      "ongoing": "#3B82F6",
+      "closed": "#EF4444",
+      "pending_payment": "#F59E0B"
+    }
+  },
+  "visual_enhancers": {
+    "glassmorphism": "bg-slate-900/80 backdrop-blur-xl border border-white/10 shadow-2xl",
+    "card_style": "bg-slate-900/90 border border-slate-800 rounded-2xl transition-all duration-300 hover:border-emerald-500/40 hover:shadow-lg hover:shadow-emerald-500/5",
+    "glow_effects": "drop-shadow-[0_0_15px_rgba(34,197,94,0.3)]",
+    "grid_borders": "border-slate-800/60"
+  },
+  "layout_and_grids": {
+    "container_max_width": "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
+    "hero_layout": "grid grid-cols-1 lg:grid-cols-12 gap-8 items-center py-12 lg:py-20",
+    "bento_grid": "grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6",
+    "bracket_grid": "flex flex-row overflow-x-auto gap-8 py-6 min-w-full scrollbar-thin scrollbar-thumb-slate-700"
+  },
+  "image_urls": {
+    "hero_banner": "https://images.unsplash.com/photo-1521138054413-5a47d349b7af?crop=entropy&cs=srgb&fm=jpg&q=85",
+    "futevolei_match": "https://images.unsplash.com/photo-1601512986351-9b0e01780eef?crop=entropy&cs=srgb&fm=jpg&q=85",
+    "volleyball_ball": "https://images.unsplash.com/photo-1592656094267-764a45160876?crop=entropy&cs=srgb&fm=jpg&q=85",
+    "beach_tennis": "https://images.unsplash.com/photo-1554068865-24cecd4e34b8?crop=entropy&cs=srgb&fm=jpg&q=85",
+    "trophy": "https://images.unsplash.com/photo-1514820720301-4c4790309f46?crop=entropy&cs=srgb&fm=jpg&q=85",
+    "tennis_court": "https://images.unsplash.com/photo-1545151414-8a948e1ea54f?crop=entropy&cs=srgb&fm=jpg&q=85"
+  },
+  "components": {
+    "navigation_bar": {
+      "path": "src/components/Navbar.jsx",
+      "features": [
+        "Brand Logo 'ArenaHub' with neon lightning icon",
+        "Links: Torneios, Sorteios, Chaveamento, Painel Admin",
+        "Language switch (PT-BR)",
+        "User profile dropdown / Social Login trigger with Google & Facebook simulator",
+        "Glassmorphism dark sticky top bar with z-50"
+      ]
+    },
+    "hero_section": {
+      "features": [
+        "Dynamic banner with dark overlay (bg-black/40)",
+        "Headline: 'Transforme seus Torneios em Grandes Espetáculos'",
+        "CTA Buttons: 'Explorar Torneios' and 'Cadastrar Meu Torneio'",
+        "Live stats pill: 'R$ 150.000+ em premiações distribuídas • 1.200+ duplas inscritas'"
+      ]
+    },
+    "competition_listing": {
+      "features": [
+        "Category Filter Chips: Todos, Futevôlei, Beach Tennis, Futebol de Sabão, Padel, Vôlei de Praia",
+        "Search input & Date Filter",
+        "Competition Card: Sport Badge, Title, Date Ranges (Inscrição & Torneio), Registration Fee / Gratuito badge, Prize Pool, Slot Counter (ex: 12/16 duplas), Quick Register Button",
+        "Empty state & Loading skeleton state"
+      ]
+    },
+    "registration_modal_flow": {
+      "features": [
+        "Step 1: Modalidade (Individual com sorteio vs Dupla confirmada)",
+        "Step 2: Dados do Atleta / Parceiro(a)",
+        "Step 3: Pagamento (Opção Grátis, PIX com QR Code dinâmico + Copia e Cola, ou Cartão de Crédito via Stripe visual simulator)",
+        "Step 4: Comprovante e Confirmação imediata + envio simulado de E-mail de confirmação"
+      ]
+    },
+    "team_draw_screen": {
+      "features": [
+        "Visual Sorteio de Duplas module",
+        "List of individual registered athletes (ex: 16 jogadores)",
+        "Animated Shuffle Button 'Realizar Sorteio Aleatório' with slot spinner effect",
+        "Export / Save Pairs button for Tournament Organizers",
+        "Option to lock manual seedings if required"
+      ]
+    },
+    "bracket_visualization_screen": {
+      "features": [
+        "Tournament Stage Connector Tree (Oitavas, Quartas, Semifinal, Grande Final)",
+        "Interactive match node with score inputs, team names, set breakdown (ex: 21-18, 21-19), live status indicator",
+        "Automatic advancement of winner to next round node",
+        "Championship trophy callout node for final winner"
+      ]
+    },
+    "admin_dashboard": {
+      "features": [
+        "Sidebar nav: Visão Geral, Tipos de Competir, Gestão de Torneios, Inscritos & PIX, Gerador de Chaves",
+        "Competition Type Creator (Nome do Esporte, Ícone, Regras, Tipo de Formato: Duplas/Individual/Times)",
+        "Competition Form: Título, Tipo, Data Início/Fim Inscrições, Data Início/Fim Torneio, Premiação, Valor Inscrição (Opção Isento/Grátis), Limite de Vagas",
+        "Payments Verifier (Aprovar PIX manualmente ou integração automática)",
+        "Bracket & Sorteio Trigger Controls"
+      ]
+    },
+    "email_simulator_modal": {
+      "features": [
+        "Interactive visual preview of Sent Confirmation Email",
+        "Includes QR Code for Check-in, Match details, Rules PDF attachment link, and PIX payment receipt summary"
+      ]
+    }
+  },
+  "instructions_to_main_agent": [
+    "Build a cohesive React application in Portuguese (Brazil) following all specified components and Brazilian tournament workflows.",
+    "Use Tailwind CSS utility classes matching the dark tactical palette (#0B0F17 base, emerald/amber accents).",
+    "Ensure all interactive buttons, forms, tabs, dropdowns, and cards include `data-testid` attributes (e.g., data-testid='competition-card-1', data-testid='register-button-pix').",
+    "Implement rich mock state (localStorage backed) so that created competitions, registered duplas, payments, draw results, and bracket scores persist seamlessly across page navigations.",
+    "Support social login simulation (Google / Facebook) and instant admin toggle for easy testing of admin features.",
+    "Do NOT use transparent dropdown backgrounds or plain white default inputs. Maintain high contrast."
+  ],
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": {
+    "data_testid_required": true,
+    "theme": "dark",
+    "micro_interactions": true,
+    "accessibility_apca_contrast": true,
+    "avoid_generic_fonts": true
+  }
+}
