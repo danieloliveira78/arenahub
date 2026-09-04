@@ -179,6 +179,23 @@ class CompetitionCreate(BaseModel):
     location: Optional[str] = ""
     allow_individual: bool = True  # if duplas format, allow solo signups for sorteio
 
+class CompetitionUpdate(BaseModel):
+    title: Optional[str] = None
+    type_id: Optional[str] = None
+    description: Optional[str] = None
+    registration_start: Optional[str] = None
+    registration_end: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    prize: Optional[str] = None
+    fee: Optional[float] = None
+    max_slots: Optional[int] = None
+    location: Optional[str] = None
+    allow_individual: Optional[bool] = None
+
+class ProfileUpdate(BaseModel):
+    bio: Optional[str] = None
+
 class RegistrationCreate(BaseModel):
     competition_id: str
     mode: Literal["individual", "dupla"] = "individual"
@@ -316,6 +333,121 @@ async def delete_competition(competition_id: str, admin=Depends(require_admin)):
     await db.teams.delete_many({"competition_id": competition_id})
     await db.matches.delete_many({"competition_id": competition_id})
     return {"ok": True}
+
+@api_router.put("/competitions/{competition_id}")
+async def update_competition(competition_id: str, body: CompetitionUpdate, admin=Depends(require_admin)):
+    existing = await db.competitions.find_one({"competition_id": competition_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Competition not found")
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "type_id" in patch:
+        ct = await db.competition_types.find_one({"type_id": patch["type_id"]}, {"_id": 0})
+        if not ct:
+            raise HTTPException(404, "Competition type not found")
+        patch["type_name"] = ct["name"]
+        patch["type_icon"] = ct.get("icon", "trophy")
+        patch["type_format"] = ct["format"]
+    if patch:
+        await db.competitions.update_one({"competition_id": competition_id}, {"$set": patch})
+    fresh = await db.competitions.find_one({"competition_id": competition_id}, {"_id": 0})
+    fresh["registered_count"] = await db.registrations.count_documents(
+        {"competition_id": competition_id, "payment_status": {"$in": ["paid", "free"]}}
+    )
+    return fresh
+
+# ---------------- User profile ----------------
+@api_router.put("/me/profile")
+async def update_my_profile(body: ProfileUpdate, user=Depends(get_current_user)):
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    if patch:
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": patch})
+    fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return fresh
+
+# ---------------- Athlete profile (public) ----------------
+@api_router.get("/athletes/{player_name}")
+async def athlete_profile(player_name: str):
+    """Public profile aggregated by player display name from teams + matches."""
+    from urllib.parse import unquote
+    name = unquote(player_name).strip()
+    if not name:
+        raise HTTPException(404, "Not found")
+
+    teams = await db.teams.find({"players": name}, {"_id": 0}).to_list(1000)
+    if not teams:
+        # Also try registrations by user_name (in case they never joined a team)
+        regs = await db.registrations.find({"user_name": name}, {"_id": 0}).to_list(500)
+        history = []
+        for r in regs:
+            comp = await db.competitions.find_one({"competition_id": r["competition_id"]}, {"_id": 0})
+            if comp:
+                history.append({"competition": comp, "team": None, "champion": False, "wins": 0})
+        # Try find user for bio
+        user = await db.users.find_one({"name": name}, {"_id": 0}) or {}
+        return {"player": name, "bio": user.get("bio", ""), "picture": user.get("picture", ""),
+                "wins": 0, "championships": 0, "tournaments": len(history),
+                "history": history, "partners": []}
+
+    team_ids = [t["team_id"] for t in teams]
+    comp_ids = list({t["competition_id"] for t in teams})
+
+    # Get all matches for those competitions
+    matches = await db.matches.find({"competition_id": {"$in": comp_ids}}, {"_id": 0}).to_list(5000)
+    max_round = {}
+    for m in matches:
+        c = m["competition_id"]
+        if c not in max_round or m["round"] > max_round[c]:
+            max_round[c] = m["round"]
+
+    wins = 0
+    championships = 0
+    per_comp_won_final = {}
+    for m in matches:
+        winner_id = m["team_a_id"] if m["winner"] == "A" else (m["team_b_id"] if m["winner"] == "B" else None)
+        if winner_id and winner_id in team_ids:
+            wins += 1
+            if m["round"] == max_round.get(m["competition_id"]):
+                per_comp_won_final[m["competition_id"]] = True
+                championships += 1
+
+    # Partners: co-players in the same teams
+    partners = {}
+    for t in teams:
+        for p in (t.get("players") or []):
+            if p and p != name:
+                partners[p] = partners.get(p, 0) + 1
+    partners_list = [{"name": k, "count": v} for k, v in sorted(partners.items(), key=lambda x: -x[1])]
+
+    # History
+    history = []
+    for c_id in comp_ids:
+        comp = await db.competitions.find_one({"competition_id": c_id}, {"_id": 0})
+        team = next((t for t in teams if t["competition_id"] == c_id), None)
+        comp_wins = sum(
+            1 for m in matches
+            if m["competition_id"] == c_id
+            and (m["team_a_id"] if m["winner"] == "A" else m["team_b_id"] if m["winner"] == "B" else None) in team_ids
+        )
+        history.append({
+            "competition": comp,
+            "team": team,
+            "champion": per_comp_won_final.get(c_id, False),
+            "wins": comp_wins,
+        })
+    history.sort(key=lambda x: (not x["champion"], -(x["wins"] or 0)))
+
+    user = await db.users.find_one({"name": name}, {"_id": 0}) or {}
+
+    return {
+        "player": name,
+        "bio": user.get("bio", ""),
+        "picture": user.get("picture", ""),
+        "wins": wins,
+        "championships": championships,
+        "tournaments": len(comp_ids),
+        "history": history,
+        "partners": partners_list,
+    }
 
 # ---------------- Registrations ----------------
 @api_router.get("/my-registrations")

@@ -3,21 +3,69 @@ import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Badge } from "@/components/ui/badge";
-import { Trophy, Calendar } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Trophy, Calendar, ExternalLink, Save } from "lucide-react";
+import { toast } from "sonner";
 
 export default function Dashboard() {
-  const { user } = useAuth();
+  const { user, refresh } = useAuth();
   const [regs, setRegs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [bio, setBio] = useState("");
+  const [savingBio, setSavingBio] = useState(false);
 
   useEffect(() => {
     api.get("/my-registrations").then(({data}) => setRegs(data)).finally(()=>setLoading(false));
-  }, []);
+    setBio(user?.bio || "");
+  }, [user]);
+
+  const saveBio = async () => {
+    setSavingBio(true);
+    try {
+      await api.put("/me/profile", { bio });
+      toast.success("Bio atualizada!");
+      refresh();
+    } catch (e) { toast.error("Erro ao salvar"); }
+    finally { setSavingBio(false); }
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10" data-testid="dashboard">
       <h1 className="text-3xl sm:text-4xl font-extrabold mb-2">Olá, {user?.name?.split(" ")[0]}</h1>
-      <p className="text-slate-400 mb-8">Suas inscrições e torneios em um só lugar.</p>
+      <p className="text-slate-400 mb-8">Suas inscrições e perfil público.</p>
+
+      <div className="grid lg:grid-cols-3 gap-6 mb-10">
+        <div className="lg:col-span-2 bg-slate-900/70 border border-slate-800 rounded-2xl p-6">
+          <div className="flex items-center justify-between mb-3">
+            <Label htmlFor="bio" className="text-base font-bold">Sua bio pública</Label>
+            <Link to={`/atletas/${encodeURIComponent(user?.name || "")}`}
+              className="text-xs text-emerald-400 hover:underline inline-flex items-center gap-1">
+              Ver perfil público <ExternalLink className="w-3 h-3"/>
+            </Link>
+          </div>
+          <Textarea id="bio" data-testid="bio-input" value={bio} onChange={e=>setBio(e.target.value)}
+            placeholder="Conte sua trajetória, estilo de jogo, títulos favoritos..."
+            className="bg-slate-800 border-slate-700 text-slate-100 min-h-[100px]"/>
+          <Button onClick={saveBio} disabled={savingBio} data-testid="save-bio-btn"
+            className="mt-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold">
+            <Save className="w-4 h-4 mr-1"/> Salvar bio
+          </Button>
+        </div>
+        <div className="bg-gradient-to-br from-emerald-500/10 to-cyan-500/5 border border-emerald-500/30 rounded-2xl p-6">
+          <div className="text-xs font-mono uppercase tracking-widest text-emerald-400 mb-2">Identidade Digital</div>
+          <h3 className="font-bold mb-1">Seu perfil de atleta</h3>
+          <p className="text-slate-300 text-sm mb-4">Compartilhe seu perfil com histórico de torneios e parcerias.</p>
+          <Link to={`/atletas/${encodeURIComponent(user?.name || "")}`}>
+            <Button data-testid="view-profile-btn" className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold">
+              Ver meu perfil público
+            </Button>
+          </Link>
+        </div>
+      </div>
+
+      <h2 className="text-2xl font-bold mb-4">Minhas inscrições</h2>
 
       {loading ? (
         <div className="text-slate-500">Carregando...</div>

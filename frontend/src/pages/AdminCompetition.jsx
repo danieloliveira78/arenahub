@@ -1,30 +1,39 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Shuffle, Trophy, Loader2, Users, Save, Radio, QrCode } from "lucide-react";
+import { Shuffle, Trophy, Loader2, Users, Save, Radio, QrCode, Pencil, Download } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "react-router-dom";
 
 export default function AdminCompetition() {
   const { id } = useParams();
   const [comp, setComp] = useState(null);
+  const [types, setTypes] = useState([]);
   const [regs, setRegs] = useState([]);
   const [teams, setTeams] = useState([]);
   const [matches, setMatches] = useState([]);
   const [busy, setBusy] = useState(false);
   const [shuffling, setShuffling] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const bracketRef = useRef(null);
 
   const load = async () => {
-    const [{data:c}, {data:r}, {data:t}, {data:m}] = await Promise.all([
+    const [{data:c}, {data:r}, {data:t}, {data:m}, {data:ts}] = await Promise.all([
       api.get(`/competitions/${id}`),
       api.get(`/competitions/${id}/registrations`),
       api.get(`/competitions/${id}/teams`),
       api.get(`/competitions/${id}/matches`),
+      api.get(`/competition-types`),
     ]);
-    setComp(c); setRegs(r); setTeams(t); setMatches(m);
+    setComp(c); setRegs(r); setTeams(t); setMatches(m); setTypes(ts);
   };
 
   useEffect(() => { load(); }, [id]);
@@ -57,6 +66,33 @@ export default function AdminCompetition() {
     } catch (e) { toast.error("Erro ao salvar"); }
   };
 
+  const saveEdit = async (patch) => {
+    try {
+      await api.put(`/competitions/${id}`, patch);
+      toast.success("Torneio atualizado");
+      setEditOpen(false);
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+  };
+
+  const downloadBracket = async () => {
+    if (!bracketRef.current) return;
+    setDownloading(true);
+    try {
+      const { default: html2canvas } = await import("html2canvas");
+      const canvas = await html2canvas(bracketRef.current, {
+        backgroundColor: "#0B0F17",
+        scale: 2, useCORS: true,
+      });
+      const link = document.createElement("a");
+      link.download = `chaveamento-${comp.title.replace(/\s+/g, "-").toLowerCase()}.png`;
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+      toast.success("Chaveamento baixado!");
+    } catch (e) { toast.error("Erro ao gerar imagem"); }
+    finally { setDownloading(false); }
+  };
+
   if (!comp) return <div className="p-10 text-slate-400">Carregando...</div>;
 
   const rounds = matches.reduce((acc, m) => { (acc[m.round]=acc[m.round]||[]).push(m); return acc; }, {});
@@ -71,6 +107,10 @@ export default function AdminCompetition() {
           <div className="text-slate-400 text-sm mt-1">{comp.type_name} · {regs.length} inscritos</div>
         </div>
         <div className="flex gap-2 flex-wrap">
+          <Button onClick={()=>setEditOpen(true)} data-testid="edit-comp-btn"
+            className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold">
+            <Pencil className="w-4 h-4 mr-1"/> Editar torneio
+          </Button>
           <Link to={`/live/sorteio/${id}`}>
             <Button data-testid="live-sorteio-btn" className="bg-purple-500 hover:bg-purple-400 text-slate-950 font-semibold">
               <Radio className="w-4 h-4 mr-1"/> Sorteio ao Vivo
@@ -91,6 +131,8 @@ export default function AdminCompetition() {
           </Button>
         </div>
       </div>
+
+      <EditCompetitionDialog open={editOpen} onOpenChange={setEditOpen} comp={comp} types={types} onSave={saveEdit} />
 
       {/* Registrations */}
       <section className="mb-10">
@@ -138,20 +180,90 @@ export default function AdminCompetition() {
       {/* Bracket */}
       {matches.length > 0 && (
         <section>
-          <h2 className="text-xl font-bold mb-4">Chaveamento</h2>
-          <div className="flex gap-6 overflow-x-auto pb-4">
-            {roundKeys.map(r => (
-              <div key={r} className="flex-shrink-0 w-72 space-y-3">
-                <div className="text-xs uppercase tracking-widest text-slate-500 font-mono font-bold">
-                  {r === roundKeys[roundKeys.length-1] ? "Final" : `Rodada ${r}`}
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+            <h2 className="text-xl font-bold">Chaveamento</h2>
+            <Button onClick={downloadBracket} disabled={downloading} data-testid="download-bracket-btn"
+              className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold">
+              {downloading ? <Loader2 className="w-4 h-4 animate-spin"/> : <><Download className="w-4 h-4 mr-1"/> Baixar imagem</>}
+            </Button>
+          </div>
+          <div ref={bracketRef} className="bg-[#0B0F17] p-6 rounded-2xl">
+            <div className="text-center mb-4">
+              <div className="text-xs font-mono uppercase tracking-widest text-emerald-400 mb-1">ArenaHub · Chaveamento oficial</div>
+              <div className="text-xl font-extrabold">{comp.title}</div>
+              <div className="text-xs text-slate-500">#{comp.type_name?.replace(/\s+/g, "")}</div>
+            </div>
+            <div className="flex gap-6 overflow-x-auto pb-4">
+              {roundKeys.map(r => (
+                <div key={r} className="flex-shrink-0 w-72 space-y-3">
+                  <div className="text-xs uppercase tracking-widest text-slate-500 font-mono font-bold">
+                    {r === roundKeys[roundKeys.length-1] ? "Final" : `Rodada ${r}`}
+                  </div>
+                  {rounds[r].map(m => <EditableMatch key={m.match_id} m={m} onSave={saveScore} />)}
                 </div>
-                {rounds[r].map(m => <EditableMatch key={m.match_id} m={m} onSave={saveScore} />)}
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </section>
       )}
     </div>
+  );
+}
+
+function EditCompetitionDialog({ open, onOpenChange, comp, types, onSave }) {
+  const [form, setForm] = useState({});
+  useEffect(() => {
+    if (comp) setForm({
+      title: comp.title, type_id: comp.type_id, description: comp.description || "",
+      registration_start: comp.registration_start, registration_end: comp.registration_end,
+      start_date: comp.start_date, end_date: comp.end_date, prize: comp.prize,
+      fee: comp.fee, max_slots: comp.max_slots, location: comp.location || "",
+    });
+  }, [comp]);
+  const set = (k, v) => setForm(f => ({...f, [k]: v}));
+  if (!comp) return null;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader><DialogTitle>Editar torneio</DialogTitle></DialogHeader>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="col-span-2"><Label>Título</Label>
+            <Input data-testid="edit-title" value={form.title || ""} onChange={e=>set("title", e.target.value)} className="bg-slate-800 border-slate-700"/></div>
+          <div className="col-span-2"><Label>Tipo</Label>
+            <Select value={form.type_id} onValueChange={v=>set("type_id", v)}>
+              <SelectTrigger data-testid="edit-type" className="bg-slate-800 border-slate-700"><SelectValue/></SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800 text-slate-100">
+                {types.map(t => <SelectItem key={t.type_id} value={t.type_id}>{t.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="col-span-2"><Label>Descrição</Label>
+            <Textarea data-testid="edit-desc" value={form.description || ""} onChange={e=>set("description", e.target.value)} className="bg-slate-800 border-slate-700"/></div>
+          <div><Label>Início inscrições</Label>
+            <Input type="date" data-testid="edit-reg-start" value={form.registration_start || ""} onChange={e=>set("registration_start", e.target.value)} className="bg-slate-800 border-slate-700"/></div>
+          <div><Label>Fim inscrições</Label>
+            <Input type="date" data-testid="edit-reg-end" value={form.registration_end || ""} onChange={e=>set("registration_end", e.target.value)} className="bg-slate-800 border-slate-700"/></div>
+          <div><Label>Início torneio</Label>
+            <Input type="date" data-testid="edit-start" value={form.start_date || ""} onChange={e=>set("start_date", e.target.value)} className="bg-slate-800 border-slate-700"/></div>
+          <div><Label>Fim torneio</Label>
+            <Input type="date" data-testid="edit-end" value={form.end_date || ""} onChange={e=>set("end_date", e.target.value)} className="bg-slate-800 border-slate-700"/></div>
+          <div className="col-span-2"><Label>Premiação</Label>
+            <Input data-testid="edit-prize" value={form.prize || ""} onChange={e=>set("prize", e.target.value)} className="bg-slate-800 border-slate-700"/></div>
+          <div><Label>Valor inscrição (R$)</Label>
+            <Input type="number" step="0.01" data-testid="edit-fee" value={form.fee ?? 0} onChange={e=>set("fee", e.target.value)} className="bg-slate-800 border-slate-700"/></div>
+          <div><Label>Vagas máximas</Label>
+            <Input type="number" data-testid="edit-slots" value={form.max_slots ?? 16} onChange={e=>set("max_slots", e.target.value)} className="bg-slate-800 border-slate-700"/></div>
+          <div className="col-span-2"><Label>Local</Label>
+            <Input data-testid="edit-location" value={form.location || ""} onChange={e=>set("location", e.target.value)} className="bg-slate-800 border-slate-700"/></div>
+        </div>
+        <DialogFooter>
+          <Button onClick={()=>onSave({...form, fee: Number(form.fee), max_slots: Number(form.max_slots)})}
+            data-testid="save-edit-btn" className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold">
+            Salvar alterações
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

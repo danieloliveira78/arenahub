@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Trophy, Medal, Award } from "lucide-react";
@@ -33,8 +34,8 @@ export default function Ranking() {
             <div className="col-span-2 text-right">Vitórias</div>
           </div>
           {rows.map((r, i) => (
-            <div key={r.player} data-testid={`rank-row-${i}`}
-              className={`grid grid-cols-12 px-6 py-4 items-center border-b border-slate-800/60 last:border-0 ${i < 3 ? "bg-gradient-to-r from-amber-500/5 to-transparent" : ""}`}>
+            <Link key={r.player} to={`/atletas/${encodeURIComponent(r.player)}`} data-testid={`rank-row-${i}`}
+              className={`grid grid-cols-12 px-6 py-4 items-center border-b border-slate-800/60 last:border-0 hover:bg-slate-800/40 transition-colors ${i < 3 ? "bg-gradient-to-r from-amber-500/5 to-transparent" : ""}`}>
               <div className="col-span-1">
                 {i === 0 ? <Trophy className="w-5 h-5 text-amber-400"/> :
                  i === 1 ? <Medal className="w-5 h-5 text-slate-300"/> :
@@ -42,7 +43,7 @@ export default function Ranking() {
                  <span className="text-slate-500 font-mono">{i+1}</span>}
               </div>
               <div className="col-span-7">
-                <div className="font-semibold text-slate-100">{r.player}</div>
+                <div className="font-semibold text-slate-100 hover:text-emerald-400">{r.player}</div>
               </div>
               <div className="col-span-2 text-right">
                 <span className={`inline-flex items-center gap-1 font-bold ${r.championships > 0 ? "text-amber-400" : "text-slate-500"}`}>
@@ -51,7 +52,7 @@ export default function Ranking() {
                 </span>
               </div>
               <div className="col-span-2 text-right text-emerald-400 font-mono font-bold">{r.wins}</div>
-            </div>
+            </Link>
           ))}
         </div>
       )}

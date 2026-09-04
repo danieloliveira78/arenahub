@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
-import { Trophy, Plus, Trash2, ArrowRight } from "lucide-react";
+import { Trophy, Plus, Trash2, Settings, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Admin() {
@@ -35,6 +35,7 @@ export default function Admin() {
         <TabsList className="bg-slate-900 border border-slate-800">
           <TabsTrigger value="competitions" data-testid="tab-competitions">Torneios</TabsTrigger>
           <TabsTrigger value="types" data-testid="tab-types">Tipos de competição</TabsTrigger>
+          <TabsTrigger value="stripe" data-testid="tab-stripe">Pagamentos</TabsTrigger>
         </TabsList>
 
         <TabsContent value="competitions" className="mt-6">
@@ -44,10 +45,37 @@ export default function Admin() {
         <TabsContent value="types" className="mt-6">
           <TypeSection types={types} onChange={load} />
         </TabsContent>
+
+        <TabsContent value="stripe" className="mt-6">
+          <StripeSection />
+        </TabsContent>
       </Tabs>
     </div>
   );
 }
+
+const StripeSection = () => (
+  <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 max-w-2xl">
+    <div className="flex items-center gap-2 mb-2">
+      <Settings className="w-5 h-5 text-emerald-400"/>
+      <h3 className="text-lg font-bold">Ativar pagamentos reais (PIX + Cartão)</h3>
+    </div>
+    <p className="text-slate-400 mb-4 text-sm">
+      No modo atual (sandbox), somente o cartão de teste 4242 4242 4242 4242 funciona. Para receber pagamentos reais e liberar o <strong>PIX</strong>, reivindique sua conta Stripe brasileira. Não precisa criar conta nova — é só clicar abaixo e completar o KYC.
+    </p>
+    <a href="https://dashboard.stripe.com/onboard_sandbox/YWNjdF8xVUJFSGtLOTJORUlFUjhYLDE3ODkxNTEyMjkv100pMMJxjZQ"
+       target="_blank" rel="noopener noreferrer">
+      <Button data-testid="claim-stripe-btn" className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold">
+        Reivindicar conta Stripe <ExternalLink className="w-4 h-4 ml-1"/>
+      </Button>
+    </a>
+    <div className="mt-4 pt-4 border-t border-slate-800 text-xs text-slate-500 space-y-1">
+      <div>· Depois de reivindicar, o Emergent troca as chaves automaticamente no próximo deploy.</div>
+      <div>· PIX exige conta com KYC aprovado (documento + comprovante de titularidade).</div>
+      <div>· Cartão fica ativo imediatamente após reivindicação.</div>
+    </div>
+  </div>
+);
 
 const TypeSection = ({ types, onChange }) => {
   const [open, setOpen] = useState(false);
@@ -223,7 +251,7 @@ const CompetitionSection = ({ types, comps, onChange }) => {
               <div className="flex items-center gap-2">
                 <Link to={`/admin/competicoes/${c.competition_id}`}>
                   <Button variant="outline" size="sm" data-testid={`manage-${c.competition_id}`} className="border-slate-700 hover:bg-slate-800">
-                    Gerenciar <ArrowRight className="w-3 h-3 ml-1"/>
+                    Gerenciar / Editar
                   </Button>
                 </Link>
                 <button onClick={()=>remove(c.competition_id)} className="text-slate-500 hover:text-red-400 p-2"><Trash2 className="w-4 h-4" /></button>

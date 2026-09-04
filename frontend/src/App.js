@@ -15,6 +15,7 @@ import PaymentCancel from "@/pages/PaymentCancel";
 import Ranking from "@/pages/Ranking";
 import CheckIn from "@/pages/CheckIn";
 import LiveSorteio from "@/pages/LiveSorteio";
+import AthleteProfile from "@/pages/AthleteProfile";
 
 function ProtectedRoute({ children, adminOnly = false }) {
   const { user, loading } = useAuth();
@@ -38,6 +39,7 @@ function AppRouter() {
         <Route path="/competicoes" element={<Competitions />} />
         <Route path="/competicoes/:id" element={<CompetitionDetail />} />
         <Route path="/ranking" element={<Ranking />} />
+        <Route path="/atletas/:name" element={<AthleteProfile />} />
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/admin" element={<ProtectedRoute adminOnly><Admin /></ProtectedRoute>} />
         <Route path="/admin/competicoes/:id" element={<ProtectedRoute adminOnly><AdminCompetition /></ProtectedRoute>} />
