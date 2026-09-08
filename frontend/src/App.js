@@ -21,6 +21,8 @@ import Financeiro from "@/pages/Financeiro";
 import AdminUsers from "@/pages/AdminUsers";
 import Signup from "@/pages/Signup";
 import Login from "@/pages/Login";
+import ForgotPassword from "@/pages/ForgotPassword";
+import ResetPassword from "@/pages/ResetPassword";
 import Plans from "@/pages/Plans";
 import SubscriptionSuccess from "@/pages/SubscriptionSuccess";
 import MinhaAssinatura from "@/pages/MinhaAssinatura";
@@ -48,6 +50,8 @@ function AppRouter() {
         <Route path="/" element={<Landing />} />
         <Route path="/cadastro" element={<Signup />} />
         <Route path="/entrar" element={<Login />} />
+        <Route path="/esqueci-senha" element={<ForgotPassword />} />
+        <Route path="/redefinir-senha" element={<ResetPassword />} />
         <Route path="/planos" element={<Plans />} />
         <Route path="/subscription/success" element={<SubscriptionSuccess />} />
         <Route path="/subscription/cancel" element={<Plans />} />

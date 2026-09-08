@@ -45,7 +45,8 @@ Transformar o ArenaHub em uma plataforma B2B SaaS multi-tenant. Cada admin/clien
 - Frontend: `Signup`, `Login`, `Plans`, `SubscriptionSuccess`, `MinhaAssinatura`, `SuperAdmin` + banner de trial/grace/inactive no Navbar + rota `/platform/admin` gated como `superAdminOnly`.
 - **AccessGate** (`/app/frontend/src/components/AccessGate.jsx`) + hook `useSubscription`: bloqueio full-page nas rotas admin quando `can_write=false` (trial expirado/canceled/inactive), com CTA único para `/planos`.
 - **Toggle Mensal/Anual** em `/planos` com selo "2 meses grátis" no anual + banner "Economize R$ 98 por ano" no card.
-- Testes: 21/21 SaaS multi-tenant (backend) + 8/8 fluxos SaaS E2E (frontend).
+- **Recuperação de senha via Resend** (`/api/auth/forgot-password` + `/api/auth/reset-password`, páginas `/esqueci-senha` e `/redefinir-senha`): token com expiração de 1 hora armazenado em `password_reset_tokens`, ok:true sem vazar existência de e-mail, sessões invalidadas ao redefinir.
+- Testes: 21/21 SaaS backend + 8/8 SaaS frontend + 7/7 password reset backend + 4/4 password reset frontend.
 
 ## Backlog (P1)
 - UI de bloqueio total quando `can_write=false` (fim do período de graça).

@@ -49,6 +49,11 @@ export default function Login() {
               className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold h-11 mt-2">
               {busy ? <Loader2 className="w-4 h-4 animate-spin"/> : "Entrar"}
             </Button>
+            <div className="text-right -mt-1">
+              <Link to="/esqueci-senha" data-testid="forgot-link" className="text-xs text-slate-400 hover:text-emerald-400">
+                Esqueci minha senha
+              </Link>
+            </div>
           </form>
           <div className="my-6 flex items-center gap-3 text-xs text-slate-500">
             <div className="flex-1 h-px bg-slate-800"/> OU <div className="flex-1 h-px bg-slate-800"/>

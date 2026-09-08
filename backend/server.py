@@ -498,6 +498,79 @@ async def login(body: LoginRequest, response: Response):
     user.pop("password_hash", None)
     return {"user": user, "session_token": session_token}
 
+class ForgotPasswordRequest(BaseModel):
+    email: str
+    origin_url: Optional[str] = ""
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(body: ForgotPasswordRequest):
+    """Always returns ok:true (do not leak whether email exists). Sends reset link if user exists."""
+    email = body.email.strip().lower()
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if user and user.get("password_hash"):
+        token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        await db.password_reset_tokens.insert_one({
+            "token": token, "user_id": user["user_id"], "email": email,
+            "expires_at": expires_at.isoformat(),
+            "used": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        origin = (body.origin_url or "").rstrip("/") or os.environ.get("APP_URL", "").rstrip("/")
+        reset_link = f"{origin}/redefinir-senha?token={token}" if origin else f"https://arenahub.app/redefinir-senha?token={token}"
+        html = f"""
+        <table role="presentation" width="100%" style="background:#0B0F17;padding:24px">
+          <tr><td>
+            <table role="presentation" width="100%" style="max-width:520px;margin:0 auto;background:#111827;border-radius:12px;padding:32px;font-family:Arial,sans-serif;color:#F8FAFC">
+              <tr><td>
+                <h1 style="color:#22C55E;font-size:22px;margin:0 0 16px 0">Redefinir sua senha</h1>
+                <p style="color:#94A3B8;margin:0 0 20px 0">Olá {escape(user.get('name') or email)}, recebemos uma solicitação para redefinir a senha da sua conta ArenaHub.</p>
+                <p style="color:#94A3B8;margin:0 0 24px 0">Clique no botão abaixo para escolher uma nova senha. Este link expira em 1 hora.</p>
+                <table role="presentation" align="center" style="margin:0 auto 24px auto"><tr><td>
+                  <a href="{escape(reset_link)}" style="display:inline-block;background:#22C55E;color:#0F172A;text-decoration:none;padding:14px 24px;border-radius:10px;font-weight:bold;font-size:15px">Redefinir minha senha</a>
+                </td></tr></table>
+                <p style="color:#64748B;font-size:12px;margin:20px 0 0 0">Se você não solicitou, ignore este e-mail. Nunca pedimos senhas ou cartões por resposta de e-mail.</p>
+                <p style="color:#64748B;font-size:12px;margin:12px 0 0 0">Enviado por {escape(EMAIL_FROM_NAME)}.</p>
+              </td></tr>
+            </table>
+          </td></tr>
+        </table>
+        """
+        try:
+            await send_email(to=email, subject="[ArenaHub] Redefinir sua senha", html=html)
+        except Exception as e:
+            logger.error(f"forgot-password email send failed for {email}: {e}")
+    return {"ok": True}
+
+@api_router.post("/auth/reset-password")
+async def reset_password(body: ResetPasswordRequest):
+    if len(body.new_password) < 6:
+        raise HTTPException(400, "Senha muito curta (mínimo 6 caracteres)")
+    rec = await db.password_reset_tokens.find_one({"token": body.token}, {"_id": 0})
+    if not rec:
+        raise HTTPException(400, "Token inválido ou já usado")
+    if rec.get("used"):
+        raise HTTPException(400, "Este link já foi utilizado. Solicite outro.")
+    exp = rec["expires_at"]
+    if isinstance(exp, str):
+        exp = datetime.fromisoformat(exp)
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
+        raise HTTPException(400, "Este link expirou. Solicite outro.")
+    await db.users.update_one({"user_id": rec["user_id"]},
+                              {"$set": {"password_hash": hash_password(body.new_password)}})
+    await db.password_reset_tokens.update_one({"token": body.token},
+                                              {"$set": {"used": True,
+                                                        "used_at": datetime.now(timezone.utc).isoformat()}})
+    # Invalidate all existing sessions for that user (defense-in-depth)
+    await db.user_sessions.delete_many({"user_id": rec["user_id"]})
+    return {"ok": True}
+
 # ---------------- Plans + Subscriptions ----------------
 @api_router.get("/plans")
 async def list_plans():
