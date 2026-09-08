@@ -18,12 +18,19 @@ import LiveSorteio from "@/pages/LiveSorteio";
 import AthleteProfile from "@/pages/AthleteProfile";
 import Financeiro from "@/pages/Financeiro";
 import AdminUsers from "@/pages/AdminUsers";
+import Signup from "@/pages/Signup";
+import Login from "@/pages/Login";
+import Plans from "@/pages/Plans";
+import SubscriptionSuccess from "@/pages/SubscriptionSuccess";
+import MinhaAssinatura from "@/pages/MinhaAssinatura";
+import SuperAdmin from "@/pages/SuperAdmin";
 
-function ProtectedRoute({ children, adminOnly = false }) {
+function ProtectedRoute({ children, adminOnly = false, superAdminOnly = false }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-400">Carregando...</div>;
-  if (!user) return <Navigate to="/" replace />;
-  if (adminOnly && !user.is_admin) return <Navigate to="/dashboard" replace />;
+  if (!user) return <Navigate to="/entrar" replace />;
+  if (superAdminOnly && user.platform_role !== "super_admin") return <Navigate to="/dashboard" replace />;
+  if (adminOnly && !user.is_admin && user.platform_role !== "super_admin") return <Navigate to="/dashboard" replace />;
   return children;
 }
 
@@ -38,6 +45,13 @@ function AppRouter() {
       <Navbar />
       <Routes>
         <Route path="/" element={<Landing />} />
+        <Route path="/cadastro" element={<Signup />} />
+        <Route path="/entrar" element={<Login />} />
+        <Route path="/planos" element={<Plans />} />
+        <Route path="/subscription/success" element={<SubscriptionSuccess />} />
+        <Route path="/subscription/cancel" element={<Plans />} />
+        <Route path="/minha-assinatura" element={<ProtectedRoute><MinhaAssinatura /></ProtectedRoute>} />
+        <Route path="/platform/admin" element={<ProtectedRoute superAdminOnly><SuperAdmin /></ProtectedRoute>} />
         <Route path="/competicoes" element={<Competitions />} />
         <Route path="/competicoes/:id" element={<CompetitionDetail />} />
         <Route path="/ranking" element={<Ranking />} />

@@ -1,0 +1,39 @@
+{
+  "summary": "Backend SaaS multi-tenant testing complete. Wrote /app/backend/tests/test_saas_multitenant.py (21 tests) covering signup/login/me, tenant provisioning with trialing, /me/tenant, /api/plans (starter monthly R$49 & yearly R$490 with 14-day trial + limits), Stripe subscription checkout, CROSS-TENANT ISOLATION (competition_types & competitions listing scoped; PUT/DELETE/draw/bracket on other-tenant competition returns 404; admin/users & admin/finance scoped), super_admin platform/stats & platform/tenants (403 for non-super-admin), plan limit enforcement (6th competition -> 402), and public marketplace unauth still returns all competitions + rankings. 21/21 pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/competitions/{id}", "issue": "Public single-competition GET does not verify tenant; any tenant_id/competition_id is retrievable if guessed. Intentional for public marketplace but worth flagging."},
+      {"endpoint": "GET /api/matches/{...} + list_matches, list_teams", "issue": "Public reads of teams/matches/list_matches are not tenant-scoped (readable to anyone with competition_id). OK for public marketplace but read-only, and consistent with public competition detail."},
+      {"endpoint": "PUT /api/competition-types/{id}", "issue": "delete_type uses tenant_scope but there is no update endpoint; delete is silent if not owner (returns ok:true even when 0 deleted). Consider 404 for cross-tenant delete."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_saas_multitenant.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_saas.xml"
+  ],
+  "action_items": [
+    "Consider returning 404 (or 403) on cross-tenant DELETE /api/competition-types/{type_id} instead of silent ok:true.",
+    "Consider optional tenant filtering (or 404) on GET /api/competitions/{id}, /matches, /teams if marketplace visibility should be limited to competitions of active tenants only.",
+    "CORS still uses allow_origin_regex='.*' with allow_credentials=True (from prev iteration) — browsers may reject; explicit origin list recommended."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1846 lines — split by concern (auth, tenants/plans/subscriptions, competitions, registrations, matches, admin, platform, email).",
+    "resolve_principal auto-creates a tenant on any authenticated call if user has none. Good for legacy Google-OAuth users, but silently succeeds even after admin deletes a tenant. Consider explicit re-provision endpoint.",
+    "_admin_owns_or_raise uses 404 (good, hides existence); however DELETE /competition-types/{type_id} bypasses it via tenant_scope() and returns ok even if nothing deleted. Should return 404 on cross-tenant.",
+    "list_types & list_competitions parse Authorization header manually — duplicated code that could be a dependency (optional_user).",
+    "PLAN_LIMITS['starter']['athletes']=200 exists but is not enforced anywhere in registrations code path — only 'tournaments' limit is enforced. Athlete cap will be exceeded silently."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_saas_multitenant.py (new, 21 SaaS multi-tenant tests)"
+  ],
+  "success_rate": {"backend": "100% (21/21 new SaaS tests + previously 20/20 core tests)", "frontend": "not tested (backend-only per request)"},
+  "test_credentials": "Owner: danieloliveira78@gmail.com / ArenaHub@2026 (from /app/memory/test_credentials.md). Session token returned in JSON body of /api/auth/signup and /api/auth/login for Bearer-header testing.",
+  "seed_data_creation": "Fixture creates two ephemeral tenants (A/B) via /api/auth/signup with random emails TEST_A_*/TEST_B_*. Additional per-test tenants for limit + duplicate-email + non-super-admin checks. Post-run cleanup script removed all test_ tenants + their competition_types/competitions.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app && python -m pytest backend/tests/test_saas_multitenant.py -v (parallel-safe, uses LoadScopeScheduling). Backend base URL comes from REACT_APP_BACKEND_URL. Signup returns lowercase email (server normalizes) so assertions use .lower(). All tenant isolation checks confirmed working: A's competition/type is invisible to B, and cross-tenant mutations (PUT/DELETE/draw/bracket) all correctly 404. Plan limit (5 tournaments) enforced with 402 on 6th create. Super admin (danieloliveira78) has full platform access; regular users get 403 on /api/platform/*.",
+  "rca of the issue": "No new issues found. Two initial test failures were self-inflicted (server lowercases email but test compared with mixed-case TEST_ prefix); fixed by comparing .lower()."
+}

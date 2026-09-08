@@ -10,6 +10,7 @@ import random
 import secrets
 import httpx
 import stripe
+import bcrypt
 from html import escape
 from html.parser import HTMLParser
 from urllib.parse import urlparse
@@ -36,6 +37,26 @@ logger = logging.getLogger(__name__)
 # ---------------- Stripe ----------------
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or "sk_test_emergent"
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+
+# ---------------- SaaS Plan Config ----------------
+TRIAL_DAYS = 14
+GRACE_DAYS = 7  # extra edit-access days after payment failure before we lock writes
+
+PLAN_LOOKUPS = ["starter_monthly", "starter_yearly"]
+
+PLAN_LIMITS = {
+    "starter": {"tournaments": 5, "athletes": 200},
+}
+
+# ---------------- Password hashing (bcrypt) ----------------
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
 
 # ---------------- Email ----------------
 EMAIL_BASE_URL = "https://integrations.emergentagent.com"
@@ -150,14 +171,134 @@ async def get_current_user(request: Request, session_token: Optional[str] = Cook
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
-async def require_admin(user=Depends(get_current_user)):
-    if not user.get("is_admin"):
+async def require_super_admin(user=Depends(get_current_user)):
+    if user.get("platform_role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Super admin access required")
+    return user
+
+# ---------------- Tenant helpers ----------------
+async def _get_tenant(tenant_id: str) -> Optional[dict]:
+    if not tenant_id:
+        return None
+    return await db.tenants.find_one({"tenant_id": tenant_id}, {"_id": 0})
+
+async def _create_tenant(owner_user_id: str, org_name: str) -> dict:
+    tenant_id = f"tn_{uuid.uuid4().hex[:12]}"
+    slug_base = re.sub(r"[^a-z0-9]+", "-", (org_name or "org").lower()).strip("-") or "org"
+    slug = slug_base
+    i = 1
+    while await db.tenants.find_one({"slug": slug}, {"_id": 0}):
+        i += 1
+        slug = f"{slug_base}-{i}"
+    trial_end = datetime.now(timezone.utc) + timedelta(days=TRIAL_DAYS)
+    doc = {
+        "tenant_id": tenant_id, "slug": slug, "name": org_name,
+        "owner_user_id": owner_user_id,
+        "subscription_status": "trialing",  # trialing | active | past_due | canceled | inactive
+        "plan": "starter",
+        "trial_end": trial_end.isoformat(),
+        "current_period_end": trial_end.isoformat(),
+        "stripe_customer_id": None, "stripe_subscription_id": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.tenants.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+def _sub_effective_status(tenant: dict) -> str:
+    """Compute effective status considering grace period."""
+    if not tenant:
+        return "inactive"
+    status = tenant.get("subscription_status", "inactive")
+    if status == "past_due":
+        # Grace period
+        cpe = tenant.get("current_period_end")
+        if cpe:
+            try:
+                end = datetime.fromisoformat(cpe)
+                if end.tzinfo is None:
+                    end = end.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) > end + timedelta(days=GRACE_DAYS):
+                    return "inactive"
+                return "grace_period"
+            except Exception:
+                return status
+    return status
+
+def _can_write(tenant: dict) -> bool:
+    st = _sub_effective_status(tenant)
+    return st in ("trialing", "active", "grace_period")
+
+async def resolve_principal(user=Depends(get_current_user)):
+    """Attach effective tenant + subscription status. Auto-creates tenant if missing."""
+    tenant = None
+    if user.get("tenant_id"):
+        tenant = await _get_tenant(user["tenant_id"])
+    if not tenant:
+        # Auto-provision default tenant on first authenticated call (Google OAuth path)
+        tenant = await _create_tenant(user["user_id"], user.get("name") or user.get("email") or "Meu clube")
+        await db.users.update_one({"user_id": user["user_id"]},
+                                  {"$set": {"tenant_id": tenant["tenant_id"], "tenant_role": "admin"}})
+        user["tenant_id"] = tenant["tenant_id"]
+        user["tenant_role"] = "admin"
+    user["_tenant"] = tenant
+    user["_effective_status"] = _sub_effective_status(tenant)
+    user["_can_write"] = _can_write(tenant)
+    return user
+
+async def require_active_subscription(user=Depends(resolve_principal)):
+    """For write endpoints — blocks if subscription is fully expired."""
+    if user.get("platform_role") == "super_admin":
+        return user
+    st = user.get("_effective_status")
+    if st not in ("trialing", "active", "grace_period"):
+        raise HTTPException(402, "Assinatura inativa. Regularize para continuar usando a plataforma.")
+    return user
+
+async def require_admin(user=Depends(resolve_principal)):
+    if not user.get("is_admin") and user.get("platform_role") != "super_admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
+
+def _admin_owns_or_raise(admin: dict, entity: Optional[dict], name: str = "recurso"):
+    """Ensure admin can access the entity by tenant. Super admin bypasses."""
+    if not entity:
+        raise HTTPException(404, f"{name.capitalize()} não encontrado")
+    if admin.get("platform_role") == "super_admin":
+        return
+    if entity.get("tenant_id") and entity["tenant_id"] != admin.get("tenant_id"):
+        raise HTTPException(404, f"{name.capitalize()} não encontrado")
+
+def tenant_scope(user: dict, extra: Optional[dict] = None) -> dict:
+    """Return mongo filter scoped to the user's tenant. Super admin sees all."""
+    q = dict(extra or {})
+    if user.get("platform_role") != "super_admin":
+        q["tenant_id"] = user.get("tenant_id")
+    return q
 
 # ---------------- Models ----------------
 class SessionRequest(BaseModel):
     session_id: str
+
+class SignupRequest(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = ""
+    password: str
+    organization_name: str
+    accept_terms: bool = True
+    accept_privacy: bool = True
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class SubscribeRequest(BaseModel):
+    lookup_key: Literal["starter_monthly", "starter_yearly"]
+    origin_url: str
+
+class ImpersonateRequest(BaseModel):
+    tenant_id: str
 
 class CompetitionTypeCreate(BaseModel):
     name: str
@@ -258,11 +399,18 @@ async def create_session(body: SessionRequest, response: Response):
         await db.users.update_one({"user_id": user_id}, {"$set": {"name": name, "picture": picture}})
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
-        is_admin = (email == OWNER_EMAIL)
+        platform_role = "super_admin" if email == OWNER_EMAIL else None
+        # Auto-create tenant for new Google user
         await db.users.insert_one({
             "user_id": user_id, "email": email, "name": name, "picture": picture,
-            "is_admin": is_admin, "created_at": datetime.now(timezone.utc).isoformat(),
+            "is_admin": True,  # tenant admin (of their own tenant)
+            "tenant_role": "admin",
+            "platform_role": platform_role,
+            "created_at": datetime.now(timezone.utc).isoformat(),
         })
+        tenant = await _create_tenant(user_id, name or "Meu clube")
+        await db.users.update_one({"user_id": user_id},
+                                  {"$set": {"tenant_id": tenant["tenant_id"]}})
 
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     await db.user_sessions.insert_one({
@@ -290,15 +438,187 @@ async def logout(request: Request, response: Response, session_token: Optional[s
     response.delete_cookie("session_token", path="/", samesite="none", secure=True)
     return {"ok": True}
 
+# ---------------- Email/Password Signup + Login ----------------
+@api_router.post("/auth/signup")
+async def signup(body: SignupRequest, response: Response):
+    email = body.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "E-mail inválido")
+    if len(body.password) < 6:
+        raise HTTPException(400, "Senha muito curta (mínimo 6 caracteres)")
+    if not body.accept_terms or not body.accept_privacy:
+        raise HTTPException(400, "É necessário aceitar os termos e a política")
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        raise HTTPException(400, "E-mail já cadastrado")
+
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    platform_role = "super_admin" if email == OWNER_EMAIL else None
+    await db.users.insert_one({
+        "user_id": user_id, "email": email, "name": body.name.strip(),
+        "phone": body.phone or "",
+        "password_hash": hash_password(body.password),
+        "is_admin": True, "tenant_role": "admin",
+        "platform_role": platform_role,
+        "picture": "",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    tenant = await _create_tenant(user_id, body.organization_name or body.name)
+    await db.users.update_one({"user_id": user_id},
+                              {"$set": {"tenant_id": tenant["tenant_id"]}})
+
+    # Create session
+    session_token = f"sess_{uuid.uuid4().hex}"
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.user_sessions.insert_one({
+        "session_token": session_token, "user_id": user_id,
+        "expires_at": expires_at.isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    response.set_cookie(key="session_token", value=session_token, httponly=True,
+                        secure=True, samesite="none", path="/", max_age=7*24*3600)
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+    return {"user": user, "tenant": tenant, "session_token": session_token}
+
+@api_router.post("/auth/login")
+async def login(body: LoginRequest, response: Response):
+    email = body.email.strip().lower()
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user or not user.get("password_hash") or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(401, "E-mail ou senha inválidos")
+    session_token = f"sess_{uuid.uuid4().hex}"
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.user_sessions.insert_one({
+        "session_token": session_token, "user_id": user["user_id"],
+        "expires_at": expires_at.isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    response.set_cookie(key="session_token", value=session_token, httponly=True,
+                        secure=True, samesite="none", path="/", max_age=7*24*3600)
+    user.pop("password_hash", None)
+    return {"user": user, "session_token": session_token}
+
+# ---------------- Plans + Subscriptions ----------------
+@api_router.get("/plans")
+async def list_plans():
+    plans = []
+    for lk in PLAN_LOOKUPS:
+        try:
+            prices = stripe.Price.list(lookup_keys=[lk], active=True, limit=1).data
+            if prices:
+                p = prices[0]
+                plans.append({
+                    "lookup_key": lk,
+                    "amount": (p.unit_amount or 0) / 100,
+                    "currency": p.currency,
+                    "interval": (p.recurring or {}).get("interval") if p.recurring else None,
+                    "product_name": stripe.Product.retrieve(p.product).name,
+                    "limits": PLAN_LIMITS.get("starter"),
+                    "trial_days": TRIAL_DAYS,
+                })
+        except Exception as e:
+            logger.error(f"plan lookup {lk}: {e}")
+    return plans
+
+@api_router.get("/me/tenant")
+async def get_my_tenant(user=Depends(resolve_principal)):
+    return {
+        "tenant": user.get("_tenant"),
+        "effective_status": user.get("_effective_status"),
+        "can_write": user.get("_can_write"),
+        "limits": PLAN_LIMITS.get(user.get("_tenant", {}).get("plan", "starter"), {}),
+    }
+
+@api_router.post("/subscriptions/checkout")
+async def subscription_checkout(body: SubscribeRequest, user=Depends(resolve_principal)):
+    tenant = user["_tenant"]
+    prices = stripe.Price.list(lookup_keys=[body.lookup_key], active=True, limit=1).data
+    if not prices:
+        raise HTTPException(500, "Preço não encontrado")
+    price = prices[0]
+
+    # Ensure Stripe customer
+    customer_id = tenant.get("stripe_customer_id")
+    if not customer_id:
+        cust = stripe.Customer.create(
+            email=user["email"], name=tenant.get("name") or user.get("name"),
+            metadata={"tenant_id": tenant["tenant_id"], "user_id": user["user_id"]},
+        )
+        customer_id = cust.id
+        await db.tenants.update_one({"tenant_id": tenant["tenant_id"]},
+                                    {"$set": {"stripe_customer_id": customer_id}})
+
+    session = stripe.checkout.Session.create(
+        customer=customer_id,
+        line_items=[{"price": price.id, "quantity": 1}],
+        mode="subscription",
+        success_url=f"{body.origin_url}/subscription/success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{body.origin_url}/subscription/cancel",
+        metadata={"tenant_id": tenant["tenant_id"], "lookup_key": body.lookup_key,
+                  "purpose": "saas_subscription"},
+        subscription_data={
+            "metadata": {"tenant_id": tenant["tenant_id"], "lookup_key": body.lookup_key},
+        },
+    )
+    return {"checkout_url": session.url, "session_id": session.id}
+
+@api_router.post("/subscriptions/portal")
+async def subscription_portal(user=Depends(resolve_principal)):
+    tenant = user["_tenant"]
+    customer_id = tenant.get("stripe_customer_id")
+    if not customer_id:
+        raise HTTPException(400, "Nenhuma assinatura ativa")
+    try:
+        session = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=f"{os.environ.get('APP_URL','')}/minha-assinatura" or "https://arenahub.com",
+        )
+        return {"portal_url": session.url}
+    except stripe.error.StripeError as e:
+        raise HTTPException(500, f"Erro: {e}")
+
+@api_router.post("/subscriptions/cancel")
+async def cancel_subscription(user=Depends(resolve_principal)):
+    tenant = user["_tenant"]
+    sub_id = tenant.get("stripe_subscription_id")
+    if not sub_id:
+        raise HTTPException(400, "Nenhuma assinatura ativa")
+    try:
+        stripe.Subscription.modify(sub_id, cancel_at_period_end=True)
+        await db.tenants.update_one({"tenant_id": tenant["tenant_id"]},
+                                    {"$set": {"cancel_at_period_end": True}})
+        return {"ok": True}
+    except stripe.error.StripeError as e:
+        raise HTTPException(500, f"Erro: {e}")
+
 # ---------------- Competition Types (Admin) ----------------
 @api_router.get("/competition-types")
-async def list_types():
-    docs = await db.competition_types.find({}, {"_id": 0}).to_list(500)
+async def list_types(request: Request):
+    """Public list: optionally filter by tenant slug. Authenticated admins get their tenant."""
+    tenant_slug = request.query_params.get("tenant")
+    q = {}
+    if tenant_slug:
+        t = await db.tenants.find_one({"slug": tenant_slug}, {"_id": 0})
+        if t:
+            q["tenant_id"] = t["tenant_id"]
+        else:
+            return []
+    else:
+        # If authenticated, scope to user's tenant
+        token = request.cookies.get("session_token") or (request.headers.get("Authorization","").replace("Bearer ","") or None)
+        if token:
+            sess = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+            if sess:
+                u = await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
+                if u and u.get("tenant_id") and u.get("platform_role") != "super_admin":
+                    q["tenant_id"] = u["tenant_id"]
+    docs = await db.competition_types.find(q, {"_id": 0}).to_list(500)
     return docs
 
 @api_router.post("/competition-types")
-async def create_type(body: CompetitionTypeCreate, admin=Depends(require_admin)):
+async def create_type(body: CompetitionTypeCreate, admin=Depends(require_active_subscription)):
     doc = {"type_id": f"ct_{uuid.uuid4().hex[:10]}", **body.model_dump(),
+           "tenant_id": admin["tenant_id"], "created_by": admin["user_id"],
            "created_at": datetime.now(timezone.utc).isoformat()}
     await db.competition_types.insert_one(doc)
     doc.pop("_id", None)
@@ -306,14 +626,31 @@ async def create_type(body: CompetitionTypeCreate, admin=Depends(require_admin))
 
 @api_router.delete("/competition-types/{type_id}")
 async def delete_type(type_id: str, admin=Depends(require_admin)):
+    existing = await db.competition_types.find_one({"type_id": type_id}, {"_id": 0})
+    _admin_owns_or_raise(admin, existing, "tipo de competição")
     await db.competition_types.delete_one({"type_id": type_id})
     return {"ok": True}
 
 # ---------------- Competitions ----------------
 @api_router.get("/competitions")
-async def list_competitions():
-    docs = await db.competitions.find({}, {"_id": 0}).sort("start_date", 1).to_list(500)
-    # attach counts
+async def list_competitions(request: Request):
+    tenant_slug = request.query_params.get("tenant")
+    q = {}
+    if tenant_slug:
+        t = await db.tenants.find_one({"slug": tenant_slug}, {"_id": 0})
+        if not t:
+            return []
+        q["tenant_id"] = t["tenant_id"]
+    else:
+        # If authenticated non-super_admin: scope to tenant. Else: public marketplace (all).
+        token = request.cookies.get("session_token") or (request.headers.get("Authorization","").replace("Bearer ","") or None)
+        if token:
+            sess = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+            if sess:
+                u = await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
+                if u and u.get("tenant_id") and u.get("platform_role") != "super_admin":
+                    q["tenant_id"] = u["tenant_id"]
+    docs = await db.competitions.find(q, {"_id": 0}).sort("start_date", 1).to_list(500)
     for d in docs:
         d["registered_count"] = await db.registrations.count_documents(
             {"competition_id": d["competition_id"], "payment_status": {"$in": ["paid", "free"]}}
@@ -331,13 +668,21 @@ async def get_competition(competition_id: str):
     return doc
 
 @api_router.post("/competitions")
-async def create_competition(body: CompetitionCreate, admin=Depends(require_admin)):
-    ct = await db.competition_types.find_one({"type_id": body.type_id}, {"_id": 0})
+async def create_competition(body: CompetitionCreate, admin=Depends(require_active_subscription)):
+    # Plan limit enforcement
+    active_count = await db.competitions.count_documents({"tenant_id": admin["tenant_id"]})
+    limit = PLAN_LIMITS.get("starter", {}).get("tournaments", 5)
+    if admin.get("platform_role") != "super_admin" and active_count >= limit:
+        raise HTTPException(402, f"Limite do plano atingido ({limit} torneios). Faça upgrade para adicionar mais.")
+    ct = await db.competition_types.find_one(
+        {"type_id": body.type_id, "tenant_id": admin["tenant_id"]}, {"_id": 0}
+    ) or await db.competition_types.find_one({"type_id": body.type_id}, {"_id": 0})
     if not ct:
         raise HTTPException(404, "Competition type not found")
     doc = {"competition_id": f"comp_{uuid.uuid4().hex[:10]}", **body.model_dump(),
            "type_name": ct["name"], "type_icon": ct.get("icon", "trophy"),
            "type_format": ct["format"], "status": "draft",
+           "tenant_id": admin["tenant_id"],
            "created_by": admin["user_id"],
            "created_at": datetime.now(timezone.utc).isoformat()}
     await db.competitions.insert_one(doc)
@@ -346,6 +691,8 @@ async def create_competition(body: CompetitionCreate, admin=Depends(require_admi
 
 @api_router.delete("/competitions/{competition_id}")
 async def delete_competition(competition_id: str, admin=Depends(require_admin)):
+    comp = await db.competitions.find_one({"competition_id": competition_id}, {"_id": 0})
+    _admin_owns_or_raise(admin, comp, "torneio")
     await db.competitions.delete_one({"competition_id": competition_id})
     await db.registrations.delete_many({"competition_id": competition_id})
     await db.teams.delete_many({"competition_id": competition_id})
@@ -355,8 +702,7 @@ async def delete_competition(competition_id: str, admin=Depends(require_admin)):
 @api_router.put("/competitions/{competition_id}")
 async def update_competition(competition_id: str, body: CompetitionUpdate, admin=Depends(require_admin)):
     existing = await db.competitions.find_one({"competition_id": competition_id}, {"_id": 0})
-    if not existing:
-        raise HTTPException(404, "Competition not found")
+    _admin_owns_or_raise(admin, existing, "torneio")
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
     if "type_id" in patch:
         ct = await db.competition_types.find_one({"type_id": patch["type_id"]}, {"_id": 0})
@@ -496,6 +842,8 @@ async def my_registrations(user=Depends(get_current_user)):
 
 @api_router.get("/competitions/{competition_id}/registrations")
 async def competition_registrations(competition_id: str, admin=Depends(require_admin)):
+    comp = await db.competitions.find_one({"competition_id": competition_id}, {"_id": 0})
+    _admin_owns_or_raise(admin, comp, "torneio")
     return await db.registrations.find({"competition_id": competition_id}, {"_id": 0}).to_list(500)
 
 @api_router.put("/admin/registrations/{registration_id}")
@@ -503,6 +851,8 @@ async def admin_update_registration(registration_id: str, body: RegistrationAdmi
     existing = await db.registrations.find_one({"registration_id": registration_id}, {"_id": 0})
     if not existing:
         raise HTTPException(404, "Registration not found")
+    comp = await db.competitions.find_one({"competition_id": existing["competition_id"]}, {"_id": 0})
+    _admin_owns_or_raise(admin, comp, "torneio")
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
     if patch:
         await db.registrations.update_one({"registration_id": registration_id}, {"$set": patch})
@@ -511,12 +861,18 @@ async def admin_update_registration(registration_id: str, body: RegistrationAdmi
 
 @api_router.delete("/admin/registrations/{registration_id}")
 async def admin_delete_registration(registration_id: str, admin=Depends(require_admin)):
+    existing = await db.registrations.find_one({"registration_id": registration_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Registration not found")
+    comp = await db.competitions.find_one({"competition_id": existing["competition_id"]}, {"_id": 0})
+    _admin_owns_or_raise(admin, comp, "torneio")
     await db.registrations.delete_one({"registration_id": registration_id})
     return {"ok": True}
 
 @api_router.get("/admin/users")
 async def admin_list_users(admin=Depends(require_admin)):
-    users = await db.users.find({}, {"_id": 0, "avatar": 0}).sort("created_at", -1).to_list(2000)
+    q = tenant_scope(admin)
+    users = await db.users.find(q, {"_id": 0, "avatar": 0}).sort("created_at", -1).to_list(2000)
     for u in users:
         u["registrations_count"] = await db.registrations.count_documents({"user_id": u["user_id"]})
     return users
@@ -526,6 +882,7 @@ async def admin_update_user(user_id: str, body: UserAdminUpdate, admin=Depends(r
     existing = await db.users.find_one({"user_id": user_id}, {"_id": 0})
     if not existing:
         raise HTTPException(404, "User not found")
+    _admin_owns_or_raise(admin, existing, "usuário")
     patch = {k: v for k, v in body.model_dump().items() if v is not None}
     if patch:
         await db.users.update_one({"user_id": user_id}, {"$set": patch})
@@ -536,6 +893,10 @@ async def admin_update_user(user_id: str, body: UserAdminUpdate, admin=Depends(r
 async def admin_delete_user(user_id: str, admin=Depends(require_admin)):
     if user_id == admin["user_id"]:
         raise HTTPException(400, "Você não pode excluir a si mesmo")
+    existing = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "User not found")
+    _admin_owns_or_raise(admin, existing, "usuário")
     await db.users.delete_one({"user_id": user_id})
     await db.user_sessions.delete_many({"user_id": user_id})
     await db.registrations.delete_many({"user_id": user_id})
@@ -546,16 +907,17 @@ async def admin_refund(session_id: str, admin=Depends(require_admin)):
     tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
     if not tx:
         raise HTTPException(404, "Transação não encontrada")
+    _admin_owns_or_raise(admin, tx, "transação")
     if tx.get("payment_status") != "paid":
         raise HTTPException(400, "Transação não está paga (não é possível reembolsar)")
-    payment_intent = tx.get("stripe_payment_intent_id")
-    if not payment_intent:
-        # Try to fetch from session
-        try:
-            s = stripe.checkout.Session.retrieve(session_id)
-            payment_intent = s.payment_intent
-        except stripe.error.StripeError as e:
-            raise HTTPException(500, f"Erro Stripe: {e}")
+        payment_intent = tx.get("stripe_payment_intent_id")
+        if not payment_intent:
+            # Try to fetch from session
+            try:
+                s = stripe.checkout.Session.retrieve(session_id)
+                payment_intent = s.payment_intent
+            except stripe.error.StripeError as e:
+                raise HTTPException(500, f"Erro Stripe: {e}")
     if not payment_intent:
         raise HTTPException(400, "PaymentIntent não localizado")
     try:
@@ -585,6 +947,16 @@ async def create_registration(body: RegistrationCreate, user=Depends(get_current
     if existing:
         raise HTTPException(400, "Você já está inscrito nesta competição")
 
+    # Enforce tenant athletes plan limit
+    tenant_id = comp.get("tenant_id")
+    if tenant_id:
+        tenant = await _get_tenant(tenant_id)
+        plan = (tenant or {}).get("plan", "starter")
+        athletes_limit = PLAN_LIMITS.get(plan, {}).get("athletes", 200)
+        current_athletes = await db.registrations.count_documents({"tenant_id": tenant_id})
+        if current_athletes >= athletes_limit:
+            raise HTTPException(402, f"Este clube atingiu o limite de {athletes_limit} inscrições do plano.")
+
     fee = float(comp.get("fee", 0.0))
     is_free = fee <= 0
 
@@ -593,6 +965,7 @@ async def create_registration(body: RegistrationCreate, user=Depends(get_current
     reg = {
         "registration_id": reg_id,
         "competition_id": body.competition_id,
+        "tenant_id": tenant_id,
         "user_id": user["user_id"],
         "user_name": user["name"],
         "user_email": user["email"],
@@ -643,6 +1016,7 @@ async def create_registration(body: RegistrationCreate, user=Depends(get_current
             checkout_url = session.url
             await db.payment_transactions.insert_one({
                 "session_id": session_id, "registration_id": reg_id,
+                "tenant_id": tenant_id,
                 "user_id": user["user_id"], "amount": fee, "currency": "brl",
                 "status": "initiated", "payment_status": "pending",
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -741,7 +1115,60 @@ async def stripe_webhook(request: Request):
     except Exception:
         raise HTTPException(400, "Invalid signature")
     obj, t = event["data"]["object"], event["type"]
+
+    # Subscription events (SaaS billing)
+    if t in ("customer.subscription.created", "customer.subscription.updated"):
+        tenant_id = (obj.get("metadata") or {}).get("tenant_id")
+        if not tenant_id:
+            # try customer metadata
+            try:
+                cust = stripe.Customer.retrieve(obj["customer"])
+                tenant_id = (cust.metadata or {}).get("tenant_id")
+            except Exception:
+                pass
+        if tenant_id:
+            status_map = {"trialing":"trialing","active":"active","past_due":"past_due",
+                          "canceled":"canceled","incomplete":"past_due","incomplete_expired":"canceled",
+                          "unpaid":"past_due", "paused":"past_due"}
+            new_status = status_map.get(obj.get("status"), "inactive")
+            update = {
+                "subscription_status": new_status,
+                "stripe_subscription_id": obj["id"],
+                "cancel_at_period_end": obj.get("cancel_at_period_end", False),
+            }
+            cpe = obj.get("current_period_end")
+            if cpe:
+                update["current_period_end"] = datetime.fromtimestamp(cpe, tz=timezone.utc).isoformat()
+            lk = (obj.get("metadata") or {}).get("lookup_key")
+            if lk:
+                update["plan_lookup_key"] = lk
+            await db.tenants.update_one({"tenant_id": tenant_id}, {"$set": update})
+        return {"status": "ok"}
+    if t == "customer.subscription.deleted":
+        tenant_id = (obj.get("metadata") or {}).get("tenant_id")
+        if tenant_id:
+            await db.tenants.update_one({"tenant_id": tenant_id},
+                {"$set": {"subscription_status": "canceled",
+                          "cancel_at_period_end": False}})
+        return {"status": "ok"}
+    if t == "invoice.payment_failed":
+        try:
+            sub_id = obj.get("subscription")
+            if sub_id:
+                sub = stripe.Subscription.retrieve(sub_id)
+                tenant_id = (sub.metadata or {}).get("tenant_id")
+                if tenant_id:
+                    await db.tenants.update_one({"tenant_id": tenant_id},
+                        {"$set": {"subscription_status": "past_due"}})
+        except Exception as e:
+            logger.error(f"invoice.payment_failed: {e}")
+        return {"status": "ok"}
+
+    # One-time tournament fee events (kept from prior implementation)
     if t == "checkout.session.completed":
+        purpose = (obj.get("metadata") or {}).get("purpose")
+        if purpose == "saas_subscription":
+            return {"status": "ok"}
         await _mark_paid(obj["id"], obj.get("payment_intent"))
     elif t == "checkout.session.async_payment_succeeded":
         await _mark_paid(obj["id"], obj.get("payment_intent"))
@@ -768,8 +1195,7 @@ async def list_teams(competition_id: str):
 @api_router.post("/competitions/{competition_id}/draw")
 async def draw_teams(competition_id: str, admin=Depends(require_admin)):
     comp = await db.competitions.find_one({"competition_id": competition_id}, {"_id": 0})
-    if not comp:
-        raise HTTPException(404, "Competition not found")
+    _admin_owns_or_raise(admin, comp, "torneio")
     regs = await db.registrations.find(
         {"competition_id": competition_id, "payment_status": {"$in": ["paid", "free"]}},
         {"_id": 0}
@@ -910,6 +1336,8 @@ def _draw_email_html(name: str, comp: dict, team: dict, partner: str, partner_ph
 
 @api_router.post("/competitions/{competition_id}/bracket")
 async def generate_bracket(competition_id: str, admin=Depends(require_admin)):
+    comp = await db.competitions.find_one({"competition_id": competition_id}, {"_id": 0})
+    _admin_owns_or_raise(admin, comp, "torneio")
     teams = await db.teams.find({"competition_id": competition_id}, {"_id": 0}).to_list(500)
     if len(teams) < 2:
         raise HTTPException(400, "Times insuficientes para chaveamento")
@@ -1015,6 +1443,8 @@ async def update_match(match_id: str, body: MatchScoreUpdate, admin=Depends(requ
     m = await db.matches.find_one({"match_id": match_id}, {"_id": 0})
     if not m:
         raise HTTPException(404, "Match not found")
+    comp = await db.competitions.find_one({"competition_id": m["competition_id"]}, {"_id": 0})
+    _admin_owns_or_raise(admin, comp, "torneio")
     winner = body.winner
     if winner is None:
         if body.score_a > body.score_b:
@@ -1051,6 +1481,7 @@ async def get_checkin(code: str, admin=Depends(require_admin)):
     if not reg:
         raise HTTPException(404, "Código inválido")
     comp = await db.competitions.find_one({"competition_id": reg["competition_id"]}, {"_id": 0})
+    _admin_owns_or_raise(admin, comp, "torneio")
     return {"registration": reg, "competition": comp}
 
 @api_router.post("/checkin/{code}")
@@ -1058,6 +1489,8 @@ async def do_checkin(code: str, admin=Depends(require_admin)):
     reg = await db.registrations.find_one({"check_in_code": code}, {"_id": 0})
     if not reg:
         raise HTTPException(404, "Código inválido")
+    comp = await db.competitions.find_one({"competition_id": reg["competition_id"]}, {"_id": 0})
+    _admin_owns_or_raise(admin, comp, "torneio")
     if reg["payment_status"] not in ("paid", "free"):
         raise HTTPException(400, "Inscrição sem pagamento confirmado")
     if reg.get("checked_in"):
@@ -1125,11 +1558,14 @@ async def rankings():
 @api_router.get("/admin/finance")
 async def admin_finance(competition_id: Optional[str] = None, status: Optional[str] = None,
                         admin=Depends(require_admin)):
-    q = {}
+    q = tenant_scope(admin)
     if competition_id:
         # Filter payment_transactions by registration_id belonging to this competition
+        reg_q = {"competition_id": competition_id}
+        if admin.get("platform_role") != "super_admin":
+            reg_q["tenant_id"] = admin.get("tenant_id")
         regs = await db.registrations.find(
-            {"competition_id": competition_id}, {"_id": 0, "registration_id": 1}
+            reg_q, {"_id": 0, "registration_id": 1}
         ).to_list(5000)
         q["registration_id"] = {"$in": [r["registration_id"] for r in regs]}
     if status:
@@ -1211,10 +1647,96 @@ async def admin_finance_csv(competition_id: Optional[str] = None, status: Option
     )
 
 # ---------------- Seed default data ----------------
+@api_router.post("/platform/migrate")
+async def migrate_legacy(super_admin=Depends(require_super_admin)):
+    """Backfill tenant_id on all legacy documents. Assigns owner's tenant."""
+    owner = await db.users.find_one({"email": OWNER_EMAIL}, {"_id": 0})
+    if not owner:
+        raise HTTPException(400, "Owner user not found")
+    tenant_id = owner.get("tenant_id")
+    if not tenant_id:
+        tenant = await _create_tenant(owner["user_id"], "ArenaHub Legacy")
+        tenant_id = tenant["tenant_id"]
+        await db.users.update_one({"user_id": owner["user_id"]},
+                                  {"$set": {"tenant_id": tenant_id, "platform_role": "super_admin"}})
+    collections = ["competition_types", "competitions", "registrations", "teams", "matches", "payment_transactions"]
+    counts = {}
+    for col in collections:
+        res = await db[col].update_many(
+            {"$or": [{"tenant_id": {"$exists": False}}, {"tenant_id": None}]},
+            {"$set": {"tenant_id": tenant_id}},
+        )
+        counts[col] = res.modified_count
+    # Also make sure all users have a tenant
+    orphan_users = await db.users.find(
+        {"$or": [{"tenant_id": {"$exists": False}}, {"tenant_id": None}]}, {"_id": 0}
+    ).to_list(2000)
+    for u in orphan_users:
+        t = await _create_tenant(u["user_id"], u.get("name") or u.get("email") or "Meu clube")
+        await db.users.update_one({"user_id": u["user_id"]},
+                                  {"$set": {"tenant_id": t["tenant_id"], "tenant_role": "admin"}})
+    counts["users_backfilled"] = len(orphan_users)
+    return {"ok": True, "counts": counts, "legacy_tenant_id": tenant_id}
+
+# ---------------- Super admin (platform) ----------------
+@api_router.get("/platform/stats")
+async def platform_stats(admin=Depends(require_super_admin)):
+    tenants = await db.tenants.find({}, {"_id": 0}).to_list(5000)
+    active = [t for t in tenants if t.get("subscription_status") in ("active", "trialing")]
+    past_due = [t for t in tenants if t.get("subscription_status") == "past_due"]
+    canceled = [t for t in tenants if t.get("subscription_status") == "canceled"]
+
+    # MRR: sum of prices per active subscription (best effort)
+    mrr = 0.0
+    for t in active:
+        lk = t.get("plan_lookup_key")
+        if lk == "starter_monthly":
+            mrr += 49.0
+        elif lk == "starter_yearly":
+            mrr += 490.0 / 12.0
+
+    txs = await db.payment_transactions.find(
+        {"payment_status": "paid"}, {"_id": 0}
+    ).to_list(10000)
+    total_paid = sum(float(t.get("amount") or 0) for t in txs)
+
+    return {
+        "totals": {
+            "tenants": len(tenants),
+            "active": len(active),
+            "past_due": len(past_due),
+            "canceled": len(canceled),
+        },
+        "mrr": round(mrr, 2),
+        "total_tournament_revenue": round(total_paid, 2),
+    }
+
+@api_router.get("/platform/tenants")
+async def platform_tenants(admin=Depends(require_super_admin)):
+    tenants = await db.tenants.find({}, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    for t in tenants:
+        owner = await db.users.find_one({"user_id": t.get("owner_user_id")},
+                                        {"_id": 0, "name": 1, "email": 1})
+        t["owner"] = owner
+        t["competitions_count"] = await db.competitions.count_documents({"tenant_id": t["tenant_id"]})
+        t["users_count"] = await db.users.count_documents({"tenant_id": t["tenant_id"]})
+    return tenants
+
+# ---------------- Seed default data (per tenant) ----------------
 @api_router.post("/seed-defaults")
-async def seed_defaults():
-    """Seed a few competition types if none exist (public bootstrap)."""
-    existing = await db.competition_types.count_documents({})
+async def seed_defaults(request: Request):
+    """Seed a few competition types for the current authenticated tenant (or public global if none)."""
+    # Determine tenant to seed
+    tenant_id = None
+    token = request.cookies.get("session_token") or (request.headers.get("Authorization","").replace("Bearer ","") or None)
+    if token:
+        sess = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+        if sess:
+            u = await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
+            if u:
+                tenant_id = u.get("tenant_id")
+    filter_ = {"tenant_id": tenant_id} if tenant_id else {}
+    existing = await db.competition_types.count_documents(filter_)
     if existing > 0:
         return {"seeded": False, "count": existing}
     defaults = [
@@ -1225,10 +1747,11 @@ async def seed_defaults():
         {"name": "Futebol Society", "icon": "trophy", "format": "times", "description": "Futebol society por times"},
     ]
     for d in defaults:
-        await db.competition_types.insert_one({
-            "type_id": f"ct_{uuid.uuid4().hex[:10]}", **d,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
+        doc = {"type_id": f"ct_{uuid.uuid4().hex[:10]}", **d,
+               "created_at": datetime.now(timezone.utc).isoformat()}
+        if tenant_id:
+            doc["tenant_id"] = tenant_id
+        await db.competition_types.insert_one(doc)
     return {"seeded": True, "count": len(defaults)}
 
 @api_router.get("/")
@@ -1256,3 +1779,69 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+@app.on_event("startup")
+async def startup_migrations():
+    """Ensure OWNER_EMAIL user is super_admin with a legacy tenant, and backfill tenant_id.
+    Also (re)sets password_hash from ADMIN_PASSWORD env so the owner can log in via email/password
+    (in addition to Google OAuth)."""
+    try:
+        owner = await db.users.find_one({"email": OWNER_EMAIL}, {"_id": 0})
+        admin_password = os.environ.get("ADMIN_PASSWORD")
+        if not owner:
+            # Seed the owner account so email/password login works out of the box
+            if admin_password:
+                user_id = f"user_{uuid.uuid4().hex[:12]}"
+                await db.users.insert_one({
+                    "user_id": user_id, "email": OWNER_EMAIL, "name": "Daniel Oliveira",
+                    "phone": "", "password_hash": hash_password(admin_password),
+                    "is_admin": True, "tenant_role": "admin",
+                    "platform_role": "super_admin", "picture": "",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                })
+                t = await _create_tenant(user_id, "ArenaHub HQ")
+                await db.users.update_one({"user_id": user_id},
+                                          {"$set": {"tenant_id": t["tenant_id"]}})
+                logger.info(f"[startup] Seeded owner account {OWNER_EMAIL} as super_admin")
+                owner = await db.users.find_one({"email": OWNER_EMAIL}, {"_id": 0})
+            else:
+                logger.info(f"[startup] Owner user {OWNER_EMAIL} not found — skipping legacy migration")
+                return
+        # Promote to super_admin if not already
+        if owner.get("platform_role") != "super_admin":
+            await db.users.update_one({"user_id": owner["user_id"]},
+                                      {"$set": {"platform_role": "super_admin"}})
+        # Sync owner password from ADMIN_PASSWORD if provided
+        if admin_password:
+            if not owner.get("password_hash") or not verify_password(admin_password, owner["password_hash"]):
+                await db.users.update_one({"user_id": owner["user_id"]},
+                                          {"$set": {"password_hash": hash_password(admin_password)}})
+                logger.info(f"[startup] Synced password for owner {OWNER_EMAIL}")
+        tenant_id = owner.get("tenant_id")
+        if not tenant_id:
+            t = await _create_tenant(owner["user_id"], owner.get("name") or "ArenaHub HQ")
+            tenant_id = t["tenant_id"]
+            await db.users.update_one({"user_id": owner["user_id"]},
+                                      {"$set": {"tenant_id": tenant_id, "tenant_role": "admin"}})
+        # Backfill tenant_id on legacy collections (only untagged docs)
+        collections = ["competition_types", "competitions", "registrations", "teams",
+                       "matches", "payment_transactions"]
+        for col in collections:
+            res = await db[col].update_many(
+                {"$or": [{"tenant_id": {"$exists": False}}, {"tenant_id": None}]},
+                {"$set": {"tenant_id": tenant_id}},
+            )
+            if res.modified_count:
+                logger.info(f"[startup] Backfilled {res.modified_count} docs in '{col}' -> tenant {tenant_id}")
+        # Ensure every non-owner user has a tenant
+        orphan_users = await db.users.find(
+            {"$or": [{"tenant_id": {"$exists": False}}, {"tenant_id": None}]}, {"_id": 0}
+        ).to_list(2000)
+        for u in orphan_users:
+            t = await _create_tenant(u["user_id"], u.get("name") or u.get("email") or "Meu clube")
+            await db.users.update_one({"user_id": u["user_id"]},
+                                      {"$set": {"tenant_id": t["tenant_id"], "tenant_role": "admin"}})
+        if orphan_users:
+            logger.info(f"[startup] Provisioned tenants for {len(orphan_users)} legacy user(s)")
+    except Exception as e:
+        logger.error(f"[startup] migration error: {e}")
