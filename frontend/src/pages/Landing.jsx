@@ -29,9 +29,11 @@ export default function Landing() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 lg:py-24 relative">
           <div className="grid lg:grid-cols-12 gap-10 items-center">
             <div className="lg:col-span-7 animate-fade-up">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-semibold mb-6">
+              <a href="https://pt.wikipedia.org/wiki/Software_como_servi%C3%A7o" target="_blank" rel="noopener noreferrer"
+                 className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-semibold mb-6 hover:bg-emerald-500/20 hover:border-emerald-500/50 transition-colors"
+                 data-testid="hero-saas-link">
                 <Sparkles className="w-3 h-3"/> SAAS DE GESTÃO DE TORNEIOS · BR
-              </div>
+              </a>
               <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.05] mb-6" data-testid="hero-title">
                 Torneios profissionais<br/>
                 <span className="text-emerald-400 glow-text-emerald">sem planilha, sem estresse.</span>

@@ -12,6 +12,7 @@ import { Shuffle, Trophy, Loader2, Users, Save, Radio, QrCode, Pencil, Download,
 import { toast } from "sonner";
 import { Link } from "react-router-dom";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import RotatingPanel from "@/components/RotatingPanel";
 
 export default function AdminCompetition() {
   const { id } = useParams();
@@ -96,6 +97,7 @@ export default function AdminCompetition() {
 
   if (!comp) return <div className="p-10 text-slate-400">Carregando...</div>;
 
+  const isRotating = comp.type_format === "duplas_rotativas";
   const rounds = matches.reduce((acc, m) => { (acc[m.round]=acc[m.round]||[]).push(m); return acc; }, {});
   const roundKeys = Object.keys(rounds).map(Number).sort((a,b)=>a-b);
 
@@ -122,14 +124,18 @@ export default function AdminCompetition() {
               <QrCode className="w-4 h-4 mr-1"/> Check-in
             </Button>
           </Link>
-          <Button onClick={doDraw} data-testid="draw-btn"
-            className={`bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold ${shuffling ? "shuffle-anim":""}`}>
-            <Shuffle className="w-4 h-4 mr-1"/> Sortear duplas
-          </Button>
-          <Button onClick={genBracket} disabled={busy || teams.length < 2} data-testid="bracket-btn"
-            className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold">
-            {busy ? <Loader2 className="w-4 h-4 animate-spin"/> : <Trophy className="w-4 h-4 mr-1"/>} Gerar chaveamento
-          </Button>
+          {!isRotating && (
+            <>
+              <Button onClick={doDraw} data-testid="draw-btn"
+                className={`bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold ${shuffling ? "shuffle-anim":""}`}>
+                <Shuffle className="w-4 h-4 mr-1"/> Sortear duplas
+              </Button>
+              <Button onClick={genBracket} disabled={busy || teams.length < 2} data-testid="bracket-btn"
+                className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold">
+                {busy ? <Loader2 className="w-4 h-4 animate-spin"/> : <Trophy className="w-4 h-4 mr-1"/>} Gerar chaveamento
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -148,8 +154,13 @@ export default function AdminCompetition() {
         </div>
       </section>
 
+      {/* Rotating (Rei da Praia) panel */}
+      {isRotating && (
+        <RotatingPanel competitionId={id} regs={regs} reloadCompetition={load} />
+      )}
+
       {/* Teams */}
-      {teams.length > 0 && (
+      {!isRotating && teams.length > 0 && (
         <section className="mb-10">
           <h2 className="text-xl font-bold mb-4">Duplas / Times sorteados</h2>
           <div className="grid md:grid-cols-3 gap-3">
@@ -174,7 +185,7 @@ export default function AdminCompetition() {
       )}
 
       {/* Bracket */}
-      {matches.length > 0 && (
+      {!isRotating && matches.length > 0 && (
         <section>
           <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
             <h2 className="text-xl font-bold">Chaveamento</h2>

@@ -146,6 +146,7 @@ const TypeSection = ({ types, onChange }) => {
                     <SelectItem value="individual">Individual</SelectItem>
                     <SelectItem value="duplas">Duplas</SelectItem>
                     <SelectItem value="times">Times</SelectItem>
+                    <SelectItem value="duplas_rotativas">Duplas rotativas (Rei da Praia)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

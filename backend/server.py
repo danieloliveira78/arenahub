@@ -303,7 +303,7 @@ class ImpersonateRequest(BaseModel):
 class CompetitionTypeCreate(BaseModel):
     name: str
     icon: str = "trophy"
-    format: Literal["individual", "duplas", "times"] = "duplas"
+    format: Literal["individual", "duplas", "times", "duplas_rotativas"] = "duplas"
     description: Optional[str] = ""
 
 class CompetitionCreate(BaseModel):
@@ -1506,6 +1506,195 @@ def _propagate_winner(all_matches: list, m: dict):
     else:
         nxt["team_b_id"] = winner_team_id
         nxt["team_b_name"] = winner_team_name
+
+# ---------------- Rotating Doubles (formato "Rei da Praia") ----------------
+# Individual signup, doubles pairs randomly drawn every round, individual scoring.
+# Group phase: 4 players/group × 3 rounds (all pairings). Top-2 individual per group
+# advance to knockout, where pairs are re-drawn each round.
+GROUP_COMBOS_OF_4 = [((0, 1), (2, 3)), ((0, 2), (1, 3)), ((0, 3), (1, 2))]
+
+async def _rotating_leaderboard_data(competition_id: str) -> list:
+    matches = await db.matches.find({"competition_id": competition_id}, {"_id": 0}).to_list(2000)
+    teams = await db.teams.find({"competition_id": competition_id}, {"_id": 0}).to_list(2000)
+    team_by_id = {t["team_id"]: t for t in teams}
+    scores = {}  # reg_id -> {name, points, wins, matches}
+    for m in matches:
+        for side, key_id in (("A", "team_a_id"), ("B", "team_b_id")):
+            team = team_by_id.get(m.get(key_id))
+            if not team:
+                continue
+            regs = team.get("source_registration_ids", []) or []
+            names = team.get("players", []) or []
+            score = m.get(f"score_{side.lower()}", 0) or 0
+            for reg_id, name in zip(regs, names):
+                s = scores.setdefault(reg_id, {"name": name, "points": 0, "wins": 0, "matches": 0})
+                s["points"] += score
+                s["matches"] += 1
+                if m.get("winner") == side:
+                    s["wins"] += 1
+    board = [{"registration_id": k, **v} for k, v in scores.items()]
+    board.sort(key=lambda x: (-x["points"], -x["wins"], x["name"]))
+    return board
+
+def _make_team(competition_id: str, tenant_id: str, players: list) -> dict:
+    return {
+        "team_id": f"team_{uuid.uuid4().hex[:10]}",
+        "competition_id": competition_id,
+        "tenant_id": tenant_id,
+        "name": " & ".join(p["user_name"] for p in players),
+        "players": [p["user_name"] for p in players],
+        "source_registration_ids": [p["registration_id"] for p in players],
+    }
+
+@api_router.post("/competitions/{competition_id}/rotating/draw-groups")
+async def rotating_draw_groups(competition_id: str, admin=Depends(require_admin)):
+    comp = await db.competitions.find_one({"competition_id": competition_id}, {"_id": 0})
+    _admin_owns_or_raise(admin, comp, "torneio")
+    if comp.get("type_format") != "duplas_rotativas":
+        raise HTTPException(400, "Este torneio não é do formato duplas rotativas")
+
+    regs = await db.registrations.find(
+        {"competition_id": competition_id, "payment_status": {"$in": ["paid", "free"]}},
+        {"_id": 0}
+    ).to_list(500)
+    n = len(regs)
+    if n < 4 or n % 4 != 0:
+        raise HTTPException(400, f"Precisa múltiplos de 4 jogadores confirmados (temos {n}, mínimo 4)")
+
+    await db.matches.delete_many({"competition_id": competition_id})
+    await db.teams.delete_many({"competition_id": competition_id})
+    await db.groups.delete_many({"competition_id": competition_id})
+
+    random.shuffle(regs)
+    groups_docs, teams_docs, matches_docs = [], [], []
+    tenant_id = comp.get("tenant_id")
+    for gi in range(0, n, 4):
+        g_players = regs[gi:gi + 4]
+        group_id = f"grp_{uuid.uuid4().hex[:10]}"
+        group_letter = chr(65 + gi // 4)
+        groups_docs.append({
+            "group_id": group_id,
+            "competition_id": competition_id,
+            "tenant_id": tenant_id,
+            "name": f"Grupo {group_letter}",
+            "player_reg_ids": [p["registration_id"] for p in g_players],
+            "player_names": [p["user_name"] for p in g_players],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        for ri, ((a1, a2), (b1, b2)) in enumerate(GROUP_COMBOS_OF_4, start=1):
+            ta = _make_team(competition_id, tenant_id, [g_players[a1], g_players[a2]])
+            tb = _make_team(competition_id, tenant_id, [g_players[b1], g_players[b2]])
+            teams_docs.extend([ta, tb])
+            matches_docs.append({
+                "match_id": f"m_{uuid.uuid4().hex[:10]}",
+                "competition_id": competition_id,
+                "tenant_id": tenant_id,
+                "phase": "group",
+                "group_id": group_id,
+                "group_name": f"Grupo {group_letter}",
+                "round": ri,
+                "position": gi // 4,
+                "team_a_id": ta["team_id"], "team_a_name": ta["name"],
+                "team_b_id": tb["team_id"], "team_b_name": tb["name"],
+                "score_a": 0, "score_b": 0, "winner": None, "next_match_id": None,
+            })
+
+    if groups_docs: await db.groups.insert_many([{**g} for g in groups_docs])
+    if teams_docs: await db.teams.insert_many([{**t} for t in teams_docs])
+    if matches_docs: await db.matches.insert_many([{**m} for m in matches_docs])
+    return {"groups": len(groups_docs), "matches": len(matches_docs)}
+
+@api_router.get("/competitions/{competition_id}/rotating/leaderboard")
+async def rotating_leaderboard(competition_id: str):
+    return await _rotating_leaderboard_data(competition_id)
+
+@api_router.get("/competitions/{competition_id}/rotating/groups")
+async def rotating_groups(competition_id: str):
+    return await db.groups.find({"competition_id": competition_id}, {"_id": 0}).to_list(100)
+
+@api_router.post("/competitions/{competition_id}/rotating/next-knockout-round")
+async def rotating_next_round(competition_id: str, admin=Depends(require_admin)):
+    comp = await db.competitions.find_one({"competition_id": competition_id}, {"_id": 0})
+    _admin_owns_or_raise(admin, comp, "torneio")
+    if comp.get("type_format") != "duplas_rotativas":
+        raise HTTPException(400, "Este torneio não é do formato duplas rotativas")
+
+    tenant_id = comp.get("tenant_id")
+    # Verify group phase complete
+    group_matches = await db.matches.find(
+        {"competition_id": competition_id, "phase": "group"}, {"_id": 0}
+    ).to_list(500)
+    if not group_matches:
+        raise HTTPException(400, "Sorteie os grupos antes de iniciar a eliminatória")
+    if any(m.get("winner") not in ("A", "B") for m in group_matches):
+        raise HTTPException(400, "Todos os placares da fase de grupos precisam estar lançados")
+
+    knockout_matches = await db.matches.find(
+        {"competition_id": competition_id, "phase": "knockout"}, {"_id": 0}
+    ).sort([("round", -1), ("position", 1)]).to_list(500)
+
+    regs_by_id = {r["registration_id"]: r for r in
+                  await db.registrations.find({"competition_id": competition_id}, {"_id": 0}).to_list(500)}
+
+    if not knockout_matches:
+        # First knockout round: top-2 per group by individual leaderboard
+        board = await _rotating_leaderboard_data(competition_id)
+        board_by_reg = {p["registration_id"]: p for p in board}
+        groups = await db.groups.find({"competition_id": competition_id}, {"_id": 0}).sort("name", 1).to_list(100)
+        qualifiers = []
+        for g in groups:
+            ranked = sorted(
+                g.get("player_reg_ids", []),
+                key=lambda rid: (-board_by_reg.get(rid, {}).get("points", 0),
+                                 -board_by_reg.get(rid, {}).get("wins", 0)),
+            )
+            qualifiers.extend(ranked[:2])
+        round_num = 1
+    else:
+        current_round = knockout_matches[0]["round"]
+        current_round_matches = [m for m in knockout_matches if m["round"] == current_round]
+        if any(m.get("winner") not in ("A", "B") for m in current_round_matches):
+            raise HTTPException(400, "Lance todos os placares da rodada atual antes de sortear a próxima")
+        winners_teams = await db.teams.find(
+            {"team_id": {"$in": [(m["team_a_id"] if m["winner"] == "A" else m["team_b_id"]) for m in current_round_matches]}},
+            {"_id": 0}
+        ).to_list(500)
+        qualifiers = []
+        for t in winners_teams:
+            qualifiers.extend(t.get("source_registration_ids", []) or [])
+        round_num = current_round + 1
+
+    if len(qualifiers) < 4:
+        return {"finished": True, "champions_registration_ids": qualifiers}
+    if len(qualifiers) % 4 != 0:
+        raise HTTPException(400, f"Total de classificados precisa ser múltiplo de 4 (temos {len(qualifiers)})")
+
+    random.shuffle(qualifiers)
+    teams_docs, matches_docs = [], []
+    for i in range(0, len(qualifiers), 4):
+        quartet = [regs_by_id[qualifiers[i + k]] for k in range(4)]
+        # Random pairing within the quartet
+        random.shuffle(quartet)
+        ta = _make_team(competition_id, tenant_id, [quartet[0], quartet[1]])
+        tb = _make_team(competition_id, tenant_id, [quartet[2], quartet[3]])
+        teams_docs.extend([ta, tb])
+        matches_docs.append({
+            "match_id": f"m_{uuid.uuid4().hex[:10]}",
+            "competition_id": competition_id,
+            "tenant_id": tenant_id,
+            "phase": "knockout",
+            "group_id": None,
+            "group_name": None,
+            "round": round_num,
+            "position": i // 4,
+            "team_a_id": ta["team_id"], "team_a_name": ta["name"],
+            "team_b_id": tb["team_id"], "team_b_name": tb["name"],
+            "score_a": 0, "score_b": 0, "winner": None, "next_match_id": None,
+        })
+
+    await db.teams.insert_many([{**t} for t in teams_docs])
+    await db.matches.insert_many([{**m} for m in matches_docs])
+    return {"round": round_num, "matches": len(matches_docs), "phase": "knockout"}
 
 @api_router.get("/competitions/{competition_id}/matches")
 async def list_matches(competition_id: str):
