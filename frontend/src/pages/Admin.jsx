@@ -10,8 +10,17 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Trophy, Plus, Trash2, Settings, ExternalLink, DollarSign, Users } from "lucide-react";
 import { toast } from "sonner";
+import AccessGate from "@/components/AccessGate";
 
 export default function Admin() {
+  return (
+    <AccessGate>
+      <AdminInner />
+    </AccessGate>
+  );
+}
+
+function AdminInner() {
   const [types, setTypes] = useState([]);
   const [comps, setComps] = useState([]);
 

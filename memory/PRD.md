@@ -43,7 +43,9 @@ Transformar o ArenaHub em uma plataforma B2B SaaS multi-tenant. Cada admin/clien
 - Isolamento tenant em: competitions CRUD, competition-types CRUD, registrations CRUD, draw, bracket, matches, checkin, admin/users, admin/finance, admin/refund.
 - Startup migration: promove OWNER a super_admin, seed password de `ADMIN_PASSWORD`, backfill de tenant_id em legacy docs, auto-provisiona tenants para usuários órfãos.
 - Frontend: `Signup`, `Login`, `Plans`, `SubscriptionSuccess`, `MinhaAssinatura`, `SuperAdmin` + banner de trial/grace/inactive no Navbar + rota `/platform/admin` gated como `superAdminOnly`.
-- Testes: 21/21 SaaS multi-tenant + 20/20 core do single-tenant.
+- **AccessGate** (`/app/frontend/src/components/AccessGate.jsx`) + hook `useSubscription`: bloqueio full-page nas rotas admin quando `can_write=false` (trial expirado/canceled/inactive), com CTA único para `/planos`.
+- **Toggle Mensal/Anual** em `/planos` com selo "2 meses grátis" no anual + banner "Economize R$ 98 por ano" no card.
+- Testes: 21/21 SaaS multi-tenant (backend) + 8/8 fluxos SaaS E2E (frontend).
 
 ## Backlog (P1)
 - UI de bloqueio total quando `can_write=false` (fim do período de graça).

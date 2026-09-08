@@ -2,6 +2,7 @@ import "@/App.css";
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
+import AccessGate from "@/components/AccessGate";
 import Navbar from "@/components/Navbar";
 import Landing from "@/pages/Landing";
 import Competitions from "@/pages/Competitions";
@@ -58,11 +59,11 @@ function AppRouter() {
         <Route path="/atletas/:name" element={<AthleteProfile />} />
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/admin" element={<ProtectedRoute adminOnly><Admin /></ProtectedRoute>} />
-        <Route path="/admin/competicoes/:id" element={<ProtectedRoute adminOnly><AdminCompetition /></ProtectedRoute>} />
-        <Route path="/admin/checkin" element={<ProtectedRoute adminOnly><CheckIn /></ProtectedRoute>} />
-        <Route path="/admin/financeiro" element={<ProtectedRoute adminOnly><Financeiro /></ProtectedRoute>} />
-        <Route path="/admin/usuarios" element={<ProtectedRoute adminOnly><AdminUsers /></ProtectedRoute>} />
-        <Route path="/live/sorteio/:id" element={<ProtectedRoute adminOnly><LiveSorteio /></ProtectedRoute>} />
+        <Route path="/admin/competicoes/:id" element={<ProtectedRoute adminOnly><AccessGate><AdminCompetition /></AccessGate></ProtectedRoute>} />
+        <Route path="/admin/checkin" element={<ProtectedRoute adminOnly><AccessGate><CheckIn /></AccessGate></ProtectedRoute>} />
+        <Route path="/admin/financeiro" element={<ProtectedRoute adminOnly><AccessGate><Financeiro /></AccessGate></ProtectedRoute>} />
+        <Route path="/admin/usuarios" element={<ProtectedRoute adminOnly><AccessGate><AdminUsers /></AccessGate></ProtectedRoute>} />
+        <Route path="/live/sorteio/:id" element={<ProtectedRoute adminOnly><AccessGate><LiveSorteio /></AccessGate></ProtectedRoute>} />
         <Route path="/payment/success" element={<PaymentSuccess />} />
         <Route path="/payment/cancel" element={<PaymentCancel />} />
       </Routes>

@@ -1,0 +1,27 @@
+{
+  "summary": "Frontend E2E validation for ArenaHub SaaS multi-tenant flows. Verified: (1) Signup at /cadastro creates account, toast 'Conta criada' and redirects to /planos; (2) Trial banner appears in Navbar with 'Trial ativo · 14 dias restantes · ver planos' linking to /planos; (3) /planos cycle-toggle defaults to yearly (R$ 41), monthly toggle shows R$ 49, yearly toggle shows '2 MESES GRÁTIS' badge + 'Economize R$ 98 por ano' savings banner on the card; (4) Clicking [data-testid='subscribe-starter_yearly'] triggers POST /api/subscriptions/checkout and browser navigates to https://checkout.stripe.com/... (verified visually — did NOT complete payment); (5) AccessGate: after patching a fresh tenant's subscription_status to 'canceled' (with past current_period_end/trial_end) via motor, /admin renders [data-testid='access-gate-blocked'] with heading 'Ative o Starter para continuar', Lock icon, [data-testid='access-gate-cta'] linking to /planos, and no [data-testid='admin'] leak; /dashboard remains accessible (not gated); (6) Super admin (danieloliveira78@gmail.com) login redirects to /dashboard, user dropdown contains [data-testid='menu-platform'] linking to /platform/admin, and /platform/admin renders [data-testid='super-admin'] with 'Painel da plataforma' title; (7) Non-super-admin visiting /platform/admin is redirected to /dashboard; (8) /minha-assinatura renders tenant name, status badge ('Em teste grátis' / 'trialing'), next renewal date and 'Escolher plano' CTA.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_saas_multitenant.py (from iteration 2, not re-run)"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Plans.jsx: '2 meses grátis' text is CSS-uppercased in the yearly toggle so it renders as '2 MESES GRÁTIS'. Any product-copy contract that expects the exact casing 'meses' in DOM inner_text will read uppercase — assertion must be case-insensitive. Not a bug, but worth documenting.",
+    "AccessGate is client-side only. Because /admin is wrapped in <AccessGate>, if a canceled tenant obtains a valid session_token they cannot see the admin UI, but the backend admin endpoints (/api/admin/*) still enforce their own auth checks. Confirm backend also rejects mutations for canceled tenants (not tested here — out of scope).",
+    "useSubscription hook fetches /me/tenant. If that call fails silently (e.g. 401 after logout race), AccessGate may show 'Carregando...' indefinitely. Consider a fallback timeout.",
+    "Navbar trial-banner check runs api.get('/me/tenant') on every user change; consider memoizing on route changes to reduce requests."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not re-run (21/21 previously)", "frontend": "100% (all 8 requested flows passed)"},
+  "test_credentials": "Super admin: danieloliveira78@gmail.com / ArenaHub@2026. Fresh users created with random emails (prefix testagent_/gateuser_) and password test1234 — all cleaned up post-test.",
+  "seed_data_creation": "Created 3 ephemeral users/tenants during testing; deleted after via motor cleanup. One tenant (gateuser_*) was patched to subscription_status='canceled' with past current_period_end and trial_end to trigger AccessGate — also deleted.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Frontend base URL: https://gamify-tournaments.preview.emergentagent.com. Tenants collection key is 'tenant_id' (NOT 'id'). To simulate inactive tenant, update tenants doc via motor filter {'tenant_id': '<id>'} with $set subscription_status='canceled', past current_period_end, past trial_end. AccessGate wraps /admin only; /dashboard is intentionally not gated. Yearly toggle badge text is uppercased via CSS — assert case-insensitively. Stripe checkout click triggers full page navigation to checkout.stripe.com; intercepting response body may not work due to fast redirect — verify via page.url or screenshot instead.",
+  "rca of the issue": "N/A — no bugs found in the three requested items (AccessGate, monthly/yearly toggle, Signup→Plans→Stripe flow). All data-testids present and functional."
+}
