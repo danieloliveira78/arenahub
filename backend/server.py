@@ -1112,6 +1112,65 @@ async def create_registration(body: RegistrationCreate, user=Depends(get_current
     reg["checkout_session_id"] = session_id
     return {"registration": reg, "checkout_url": checkout_url}
 
+class RegistrationRetryBody(BaseModel):
+    origin_url: str
+
+@api_router.post("/my/registrations/{registration_id}/checkout")
+async def retry_registration_checkout(registration_id: str, body: RegistrationRetryBody,
+                                       user=Depends(get_current_user)):
+    """Regenerate a Stripe checkout session for a pending/failed registration owned by the user."""
+    reg = await db.registrations.find_one({"registration_id": registration_id}, {"_id": 0})
+    if not reg:
+        raise HTTPException(404, "Inscrição não encontrada")
+    if reg.get("user_id") != user["user_id"]:
+        raise HTTPException(403, "Você não é dono desta inscrição")
+    if reg.get("payment_status") in ("paid", "free"):
+        raise HTTPException(400, "Esta inscrição já está confirmada")
+    comp = await db.competitions.find_one({"competition_id": reg["competition_id"]}, {"_id": 0})
+    if not comp:
+        raise HTTPException(404, "Competição não encontrada")
+    fee = float(comp.get("fee", 0.0))
+    if fee <= 0:
+        # Free comp — just mark as free
+        await db.registrations.update_one({"registration_id": registration_id},
+                                          {"$set": {"payment_status": "free"}})
+        return {"checkout_url": None, "free": True}
+    try:
+        amount_cents = int(round(fee * 100))
+        base_args = dict(
+            line_items=[{
+                "price_data": {"currency": "brl",
+                                "product_data": {"name": f"Inscrição: {comp['title']}"},
+                                "unit_amount": amount_cents},
+                "quantity": 1,
+            }],
+            mode="payment",
+            success_url=f"{body.origin_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{body.origin_url}/payment/cancel?reg_id={registration_id}",
+            metadata={"registration_id": registration_id, "user_id": user["user_id"],
+                      "competition_id": reg["competition_id"]},
+        )
+        try:
+            session = stripe.checkout.Session.create(**base_args, payment_method_types=["card", "pix"])
+        except stripe.error.InvalidRequestError:
+            session = stripe.checkout.Session.create(**base_args)
+    except stripe.error.StripeError as e:
+        raise HTTPException(500, f"Erro Stripe: {e}")
+
+    await db.payment_transactions.insert_one({
+        "session_id": session.id, "registration_id": registration_id,
+        "tenant_id": reg.get("tenant_id"),
+        "user_id": user["user_id"], "amount": fee, "currency": "brl",
+        "status": "initiated", "payment_status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await db.registrations.update_one(
+        {"registration_id": registration_id},
+        {"$set": {"checkout_session_id": session.id, "payment_status": "pending"}},
+    )
+    return {"checkout_url": session.url, "session_id": session.id}
+
 async def _send_confirmation_email(email: str, name: str, comp: dict, reg: dict, paid: bool):
     status_line = ("Pagamento confirmado" if paid else
                    ("Inscrição gratuita confirmada" if reg.get("payment_status") == "free"

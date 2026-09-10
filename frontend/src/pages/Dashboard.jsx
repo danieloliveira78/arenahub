@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Trophy, Calendar, ExternalLink, Save, Camera, Loader2 } from "lucide-react";import { toast } from "sonner";
+import { Trophy, Calendar, ExternalLink, Save, Camera, Loader2, CreditCard } from "lucide-react";import { toast } from "sonner";
 import { resizeImageToDataUrl } from "@/lib/resizeImage";
 
 export default function Dashboard() {
@@ -17,12 +17,31 @@ export default function Dashboard() {
   const [bio, setBio] = useState("");
   const [savingBio, setSavingBio] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [payingRegId, setPayingRegId] = useState(null);
   const fileRef = useRef(null);
 
   useEffect(() => {
     api.get("/my-registrations").then(({data}) => setRegs(data)).finally(()=>setLoading(false));
     setBio(user?.bio || "");
   }, [user]);
+
+  const retryCheckout = async (reg) => {
+    setPayingRegId(reg.registration_id);
+    try {
+      const { data } = await api.post(`/my/registrations/${reg.registration_id}/checkout`, {
+        origin_url: window.location.origin,
+      });
+      if (data.checkout_url) {
+        window.location.href = data.checkout_url;
+      } else if (data.free) {
+        toast.success("Inscrição gratuita confirmada!");
+        const { data: fresh } = await api.get("/my-registrations");
+        setRegs(fresh);
+      }
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Erro ao retomar pagamento");
+    } finally { setPayingRegId(null); }
+  };
 
   const saveBio = async () => {
     setSavingBio(true);
@@ -117,35 +136,69 @@ export default function Dashboard() {
         </div>
       ) : (
         <div className="grid md:grid-cols-2 gap-4">
-          {regs.map(r => (
-            <Link key={r.registration_id} to={`/competicoes/${r.competition_id}`} data-testid={`reg-${r.registration_id}`}
-              className="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 hover:border-emerald-500/40 transition-colors">
-              <div className="flex items-start justify-between mb-2">
-                <div>
-                  <div className="text-xs uppercase text-emerald-400 font-mono tracking-widest">{r.competition?.type_name}</div>
-                  <h3 className="text-lg font-bold">{r.competition?.title}</h3>
-                </div>
-                <StatusBadge status={r.payment_status} />
-              </div>
-              <div className="text-sm text-slate-400 flex items-center gap-2 mt-3">
-                <Calendar className="w-3.5 h-3.5" /> {r.competition?.start_date}
-              </div>
-              {r.mode === "dupla" && r.partner_name ? (
-                <div className="mt-3 pt-3 border-t border-slate-800 flex items-center gap-3">
-                  <Avatar className="w-10 h-10 border border-slate-700">
-                    <AvatarImage src={r.partner_avatar} className="object-cover"/>
-                    <AvatarFallback className="bg-cyan-500/20 text-cyan-300 text-sm font-bold">{r.partner_name?.[0]}</AvatarFallback>
-                  </Avatar>
+          {regs.map(r => {
+            const isPending = r.payment_status === "pending" || r.payment_status === "failed";
+            const CardInner = (
+              <>
+                <div className="flex items-start justify-between mb-2">
                   <div>
-                    <div className="text-xs text-slate-500 uppercase tracking-widest font-mono">Sua dupla</div>
-                    <div className="font-semibold text-slate-200">{r.partner_name}</div>
+                    <div className="text-xs uppercase text-emerald-400 font-mono tracking-widest">{r.competition?.type_name}</div>
+                    <h3 className="text-lg font-bold">{r.competition?.title}</h3>
                   </div>
+                  <StatusBadge status={r.payment_status} />
                 </div>
-              ) : (
-                <div className="text-xs text-slate-500 mt-1">Modalidade: {r.mode === "individual" ? "Individual (aguardando sorteio)" : "Dupla"}</div>
-              )}
-            </Link>
-          ))}
+                <div className="text-sm text-slate-400 flex items-center gap-2 mt-3">
+                  <Calendar className="w-3.5 h-3.5" /> {r.competition?.start_date}
+                </div>
+                {r.mode === "dupla" && r.partner_name ? (
+                  <div className="mt-3 pt-3 border-t border-slate-800 flex items-center gap-3">
+                    <Avatar className="w-10 h-10 border border-slate-700">
+                      <AvatarImage src={r.partner_avatar} className="object-cover"/>
+                      <AvatarFallback className="bg-cyan-500/20 text-cyan-300 text-sm font-bold">{r.partner_name?.[0]}</AvatarFallback>
+                    </Avatar>
+                    <div>
+                      <div className="text-xs text-slate-500 uppercase tracking-widest font-mono">Sua dupla</div>
+                      <div className="font-semibold text-slate-200">{r.partner_name}</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-500 mt-1">Modalidade: {r.mode === "individual" ? "Individual (aguardando sorteio)" : "Dupla"}</div>
+                )}
+                {isPending && (
+                  <div className="mt-4 pt-4 border-t border-amber-500/20 flex flex-wrap gap-2 items-center">
+                    <Button
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); retryCheckout(r); }}
+                      disabled={payingRegId === r.registration_id}
+                      data-testid={`pay-reg-${r.registration_id}`}
+                      className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold h-9 px-4">
+                      {payingRegId === r.registration_id ? (
+                        <Loader2 className="w-4 h-4 animate-spin"/>
+                      ) : (
+                        <><CreditCard className="w-4 h-4 mr-1.5"/> Pagar inscrição</>
+                      )}
+                    </Button>
+                    <Link to={`/competicoes/${r.competition_id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-xs text-slate-400 hover:text-emerald-400 underline">
+                      ver detalhes
+                    </Link>
+                  </div>
+                )}
+              </>
+            );
+            return isPending ? (
+              <div key={r.registration_id} data-testid={`reg-${r.registration_id}`}
+                className="bg-slate-900/70 border border-amber-500/30 rounded-2xl p-5">
+                {CardInner}
+              </div>
+            ) : (
+              <Link key={r.registration_id} to={`/competicoes/${r.competition_id}`}
+                data-testid={`reg-${r.registration_id}`}
+                className="bg-slate-900/70 border border-slate-800 rounded-2xl p-5 hover:border-emerald-500/40 transition-colors">
+                {CardInner}
+              </Link>
+            );
+          })}
         </div>
       )}
     </div>

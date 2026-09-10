@@ -1,0 +1,24 @@
+{
+  "summary": "Regression tests for the pending-payment retry flow (BUG FIX: POST /api/my/registrations/{id}/checkout + Dashboard.jsx amber Card w/ pay-reg-<id> button). Backend: 6/6 pytest passed in /app/backend/tests/test_retry_checkout.py — covers all requested branches (401 unauth, 404 missing, 403 not-owner, 400 already-paid, 200 free-comp marks payment_status='free', 200 paid-pending returns Stripe checkout_url + inserts payment_transactions doc with correct session_id/tenant_id/user_id/amount + updates registration.checkout_session_id). Frontend: seeded via Mongo one pending + one paid registration for super admin against a fee=75 comp; logged in via /entrar → /dashboard renders pending reg as <div data-testid='reg-...'> (amber Card, NOT a Link) with visible [data-testid='pay-reg-...'] amber button, while the confirmed reg still renders as <a data-testid='reg-...'> Link to /competicoes/{id}. Clicking the pay button redirected to https://checkout.stripe.com/c/pay/cs_test_... — NOT to /competicoes/ — confirming the bug is fixed end-to-end.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_retry_checkout.py",
+    "/app/test_reports/pytest/retry_checkout.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py retry_registration_checkout inserts a new payment_transactions doc every retry — over many retries this can leak orphan 'initiated' rows for the same registration. Consider upserting on registration_id or marking previous initiated rows as 'superseded' when a new session is generated.",
+    "retry_registration_checkout accepts arbitrary origin_url from client — used verbatim in success_url/cancel_url. Low risk (only affects the user's own redirect) but consider validating against an allowlist to prevent open-redirect abuse if the value is ever surfaced elsewhere.",
+    "Dashboard.jsx line 10 has two statements on the same line ('lucide-react\";import { toast }') — cosmetic but hurts readability and could confuse some formatters.",
+    "The 'free-comp' branch of retry_registration_checkout does not send a confirmation email (unlike the initial create_registration path which calls _send_confirmation_email when is_free). Users retrying a pending reg that turned out free won't receive the confirmation email + QR code. Suggest calling _send_confirmation_email(paid=False) after marking free."
+  ],
+  "updated_files": ["/app/backend/tests/test_retry_checkout.py", "/app/test_reports/iteration_8.json"],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "100% (login + dashboard render + Card-vs-Link tag assertion + Stripe redirect verified)"},
+  "test_credentials": "Super admin danieloliveira78@gmail.com / ArenaHub@2026 (unchanged). A fresh athlete + a second athlete were signed up via /api/auth/signup with TEST_ prefixed emails and left in DB (harmless).",
+  "seed_data_creation": "Backend tests seed comp_TEST_paid_* / comp_TEST_free_* competitions and reg_TEST_* registrations via motor and clean up in try/finally. Frontend UI test seeded one comp_TEST_uipay_* + two reg_TEST_uipay_* (pending & paid) for super admin; cleaned up after (competitions/registrations/payment_transactions all deleted).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Retry-checkout regression lives at /app/backend/tests/test_retry_checkout.py (runs in ~3s). Reuses super admin creds from /app/memory/test_credentials.md. If the endpoint contract changes (e.g., new field, different HTTP code), update the 6 assertions there. For UI regression, the seed pattern (Mongo-direct insert of a pending registration for the owner + navigate to /dashboard + assert tag==DIV + click pay-reg-<id> → wait_for_url 'checkout.stripe.com') is the fastest smoke; no Stripe card interaction is needed.",
+  "rca of the issue": "Original bug: on /dashboard, EVERY registration was wrapped in a <Link to='/competicoes/{id}'>, so a pending reg (with existing DB row + no valid checkout session) took the user to the comp page whose only CTA was 'Inscrever-se agora', which POSTs /api/registrations → 400 'já está inscrito'. Fix (verified): (a) new endpoint POST /api/my/registrations/{id}/checkout regenerates a Stripe checkout session for owner + pending/failed regs, and short-circuits with payment_status='free' when the comp fee<=0; (b) Dashboard.jsx now conditionally renders pending/failed regs as an amber DIV Card with a 'Pagar inscrição' button (data-testid='pay-reg-<id>') that calls the new endpoint and window.location.href=checkout_url, while paid/free regs keep the Link behavior. E2E confirmed: click → redirect to checkout.stripe.com (not /competicoes/)."
+}
