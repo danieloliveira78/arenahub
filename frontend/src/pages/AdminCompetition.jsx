@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -27,7 +27,7 @@ export default function AdminCompetition() {
   const [downloading, setDownloading] = useState(false);
   const bracketRef = useRef(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const [{data:c}, {data:r}, {data:t}, {data:m}, {data:ts}] = await Promise.all([
       api.get(`/competitions/${id}`),
       api.get(`/competitions/${id}/registrations`),
@@ -36,9 +36,9 @@ export default function AdminCompetition() {
       api.get(`/competition-types`),
     ]);
     setComp(c); setRegs(r); setTeams(t); setMatches(m); setTypes(ts);
-  };
+  }, [id]);
 
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => { load(); }, [load]);
 
   const doDraw = async () => {
     setShuffling(true);

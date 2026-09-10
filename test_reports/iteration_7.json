@@ -1,0 +1,24 @@
+{
+  "summary": "Regression tests for code-review fixes: (1) admin_refund NameError scope-fix, (2) AuthContext useMemo + non-empty catch, (3) AdminCompetition useCallback load, (4) ShareButtons non-empty catch. Backend: 7/7 pytest in /app/backend/tests/test_refund_fix.py. Refund on paid tx with fake pi_test_* intent returns HTTP 500 'Erro ao reembolsar: ... No such payment_intent' (Stripe rejection) — NO NameError leak in response detail nor backend logs. Refund on pending tx cleanly returns 400 'Transação não está paga'. Missing tx → 404. Smoke: /auth/login, /auth/me, /plans, /me/tenant all 200. Frontend: login danieloliveira78@gmail.com → /dashboard OK; user menu → 'Sair' → redirect to '/' OK (AuthContext useMemo intact). /admin/competicoes/{id} loads for 3 seeded comps: title/sections/'Sortear grupos' button render with no console errors — useCallback load refactor produces no infinite loops or missing effect deps. (Note: tested comps had 0 registrations so no admin-reg-* rows to assert on; page shell render + zero React warnings is the meaningful regression signal.)",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_refund_fix.py",
+    "/app/test_reports/pytest/refund_fix.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "admin_refund still lacks idempotency: replaying a successful refund on an already-refunded tx would send a second Stripe.Refund.create — consider guarding with `if tx.payment_status == 'refunded': return existing refund_id` before the Stripe call.",
+    "admin_refund catches only stripe.error.StripeError; a network/timeout or unexpected exception would 500 with a generic FastAPI trace. Wrap with a broader try/except for resilience or rely on a global exception handler.",
+    "Fetching payment_intent from Stripe session when tx.stripe_payment_intent_id is missing is a good fallback, but the retrieved value is not persisted back to the tx doc — subsequent refunds would re-fetch. Consider updating the tx with the resolved intent id.",
+    "AuthContext useMemo dependency list must include every value the memoized object references; validate that login/logout function identities are stable (useCallback) — otherwise useMemo won't actually memoize the object across renders."
+  ],
+  "updated_files": ["/app/backend/tests/test_refund_fix.py"],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% (login+logout+admin page render, no console errors)"},
+  "test_credentials": "Super admin danieloliveira78@gmail.com / ArenaHub@2026 used (not modified).",
+  "seed_data_creation": "test_refund_fix.py seeds two payment_transactions docs via motor (session_id=cs_test_TEST_*, stripe_payment_intent_id=pi_test_nonexistent_TEST) with tenant scoped to super admin. Each test cleans up its own doc in a try/finally.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Refund regression test lives at /app/backend/tests/test_refund_fix.py — reruns in ~3s and covers both branches (paid→Stripe error, pending→400). It relies on direct-mongo seed via MONGO_URL/DB_NAME from /app/backend/.env. If refund logic changes, the assertion `assert 'NameError' not in detail` is the critical guard for this specific fix. Frontend regression covered by loading /admin/competicoes/{id} and observing no React key/dep warnings in console; if seeding a competition with registrations is needed to validate [data-testid^='admin-reg-'] rows, reuse the pattern from iteration_5/6 seed scripts.",
+  "rca of the issue": "Original bug: in admin_refund, the two lines assigning payment_intent (tx.get + Stripe session.retrieve fallback) were indented inside `if payment_status != 'paid': raise HTTPException(...)` block. Since HTTPException aborts, those lines were unreachable in the paid branch; when payment_status was 'paid' execution skipped to `if not payment_intent` where the name was never bound → NameError. Fix: dedent the assignment + fallback outside the guard. Verified: paid refund now reaches stripe.Refund.create and fails cleanly with 500 'Erro ao reembolsar: ... No such payment_intent' (expected in test env with fake intent) — no NameError in response detail nor in supervisor backend logs."
+}

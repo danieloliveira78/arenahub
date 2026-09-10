@@ -2,31 +2,36 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Shuffle, Trophy, Loader2, Users, Save, Crown, Medal } from "lucide-react";
+import { Shuffle, Trophy, Loader2, Users, Save, Crown, Medal, HeartCrack, Sparkles, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-/**
- * Rotating Doubles (Rei da Praia) admin panel.
- * Groups of 4 players, 3 group rounds (all pair combinations), individual scoring.
- * Top-2 per group advance to knockout with fresh pair draw each round.
- */
 export default function RotatingPanel({ competitionId, regs, reloadCompetition }) {
   const [groups, setGroups] = useState([]);
   const [matches, setMatches] = useState([]);
+  const [teams, setTeams] = useState([]);
   const [board, setBoard] = useState([]);
   const [busy, setBusy] = useState(null);
+  const [retireOpen, setRetireOpen] = useState(false);
+  const [retireCtx, setRetireCtx] = useState(null); // {match, players}
 
   const load = async () => {
-    const [{ data: g }, { data: m }, { data: lb }] = await Promise.all([
+    const [{ data: g }, { data: m }, { data: t }, { data: lb }] = await Promise.all([
       api.get(`/competitions/${competitionId}/rotating/groups`),
       api.get(`/competitions/${competitionId}/matches`),
+      api.get(`/competitions/${competitionId}/teams`),
       api.get(`/competitions/${competitionId}/rotating/leaderboard`),
     ]);
-    setGroups(g); setMatches(m); setBoard(lb);
+    setGroups(g); setMatches(m); setTeams(t); setBoard(lb);
   };
-
   useEffect(() => { load(); }, [competitionId]);
+
+  const teamById = Object.fromEntries(teams.map(t => [t.team_id, t]));
+  const boardByReg = Object.fromEntries(board.map(p => [p.registration_id, p]));
 
   const drawGroups = async () => {
     if (groups.length > 0 && !confirm("Isso vai apagar grupos, times e partidas atuais. Continuar?")) return;
@@ -50,12 +55,43 @@ export default function RotatingPanel({ competitionId, regs, reloadCompetition }
     finally { setBusy(null); }
   };
 
-  const saveScore = async (m, score_a, score_b) => {
+  const saveScore = async (m, score_a, score_b, winner) => {
+    if (Number(score_a) === Number(score_b) && !winner) {
+      toast.error("Placar empatado — defina o vencedor pela melhor campanha");
+      return;
+    }
     try {
-      await api.put(`/matches/${m.match_id}`, { score_a: Number(score_a), score_b: Number(score_b) });
+      await api.put(`/matches/${m.match_id}`, {
+        score_a: Number(score_a), score_b: Number(score_b),
+        ...(winner ? { winner } : {}),
+      });
       toast.success("Placar salvo");
       await load();
-    } catch (e) { toast.error("Erro ao salvar"); }
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro ao salvar"); }
+  };
+
+  const openRetire = (m) => {
+    const ta = teamById[m.team_a_id]; const tb = teamById[m.team_b_id];
+    const players = [
+      ...((ta?.source_registration_ids || []).map((rid, i) => ({ reg_id: rid, name: ta.players?.[i] }))),
+      ...((tb?.source_registration_ids || []).map((rid, i) => ({ reg_id: rid, name: tb.players?.[i] }))),
+    ];
+    setRetireCtx({ match: m, players });
+    setRetireOpen(true);
+  };
+
+  const doRetire = async (registration_id, reason, notes) => {
+    if (!retireCtx) return;
+    try {
+      const { data } = await api.post(
+        `/competitions/${competitionId}/matches/${retireCtx.match.match_id}/retire-player`,
+        { registration_id, reason, notes }
+      );
+      toast.success(`${data.retired.length} jogador(es) removidos do torneio`);
+      setRetireOpen(false); setRetireCtx(null);
+      await load();
+      reloadCompetition?.();
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
   };
 
   const groupMatches = matches.filter(m => m.phase === "group");
@@ -70,7 +106,6 @@ export default function RotatingPanel({ competitionId, regs, reloadCompetition }
 
   return (
     <div className="space-y-10" data-testid="rotating-panel">
-      {/* Controls */}
       <div className="flex flex-wrap gap-3">
         <Button onClick={drawGroups} disabled={busy === "draw-groups" || regs.length < 4}
           data-testid="rotating-draw-groups"
@@ -91,7 +126,6 @@ export default function RotatingPanel({ competitionId, regs, reloadCompetition }
         </div>
       </div>
 
-      {/* Groups */}
       {groups.length > 0 && (
         <section>
           <div className="flex items-center gap-2 mb-4">
@@ -104,11 +138,16 @@ export default function RotatingPanel({ competitionId, regs, reloadCompetition }
                 className="bg-slate-900/70 border border-slate-800 rounded-xl p-4">
                 <div className="text-xs text-emerald-400 font-mono uppercase mb-3">{g.name}</div>
                 <ol className="space-y-1">
-                  {(g.player_names || []).map((n, i) => (
-                    <li key={i} className="text-sm text-slate-200">
-                      <span className="text-slate-500 font-mono text-xs mr-2">{i + 1}.</span>{n}
-                    </li>
-                  ))}
+                  {(g.player_names || []).map((n, i) => {
+                    const rid = g.player_reg_ids?.[i];
+                    const p = boardByReg[rid];
+                    return (
+                      <li key={i} className={`text-sm flex items-center justify-between ${p?.retired ? "line-through text-slate-500" : "text-slate-200"}`}>
+                        <span><span className="text-slate-500 font-mono text-xs mr-2">{i + 1}.</span>{n}</span>
+                        {p?.retired && <Badge className="bg-red-500/20 text-red-300 border border-red-500/40 text-[10px]">OUT</Badge>}
+                      </li>
+                    );
+                  })}
                 </ol>
               </div>
             ))}
@@ -116,7 +155,6 @@ export default function RotatingPanel({ competitionId, regs, reloadCompetition }
         </section>
       )}
 
-      {/* Group matches */}
       {groupMatches.length > 0 && (
         <section>
           <h2 className="text-xl font-bold mb-4">Fase de grupos · Rodadas</h2>
@@ -128,7 +166,8 @@ export default function RotatingPanel({ competitionId, regs, reloadCompetition }
                   <div className="text-xs font-mono uppercase text-emerald-400 mb-3">{g.name}</div>
                   <div className="space-y-3">
                     {gm.map(m => (
-                      <MatchRow key={m.match_id} m={m} onSave={saveScore} label={`R${m.round}`} />
+                      <MatchRow key={m.match_id} m={m} onSave={saveScore} onRetire={openRetire}
+                        teamById={teamById} boardByReg={boardByReg} label={`R${m.round}`} />
                     ))}
                   </div>
                 </div>
@@ -138,7 +177,6 @@ export default function RotatingPanel({ competitionId, regs, reloadCompetition }
         </section>
       )}
 
-      {/* Knockout matches */}
       {koRounds.length > 0 && (
         <section>
           <h2 className="text-xl font-bold mb-4">Eliminatória</h2>
@@ -146,17 +184,18 @@ export default function RotatingPanel({ competitionId, regs, reloadCompetition }
             {koRounds.map(r => (
               <div key={r} className="flex-shrink-0 w-72 space-y-3">
                 <div className="text-xs uppercase tracking-widest text-slate-500 font-mono font-bold">
-                  {r === koRounds[koRounds.length - 1] && !koByRound[r].some(m => !m.winner) && koByRound[r].length === 1
-                    ? "Final" : `Rodada ${r}`}
+                  {r === koRounds[koRounds.length - 1] && koByRound[r].length === 1 ? "Final" : `Rodada ${r}`}
                 </div>
-                {koByRound[r].map(m => <MatchRow key={m.match_id} m={m} onSave={saveScore} />)}
+                {koByRound[r].map(m => (
+                  <MatchRow key={m.match_id} m={m} onSave={saveScore} onRetire={openRetire}
+                    teamById={teamById} boardByReg={boardByReg} />
+                ))}
               </div>
             ))}
           </div>
         </section>
       )}
 
-      {/* Individual Leaderboard */}
       {board.length > 0 && (
         <section>
           <div className="flex items-center gap-2 mb-4">
@@ -176,14 +215,20 @@ export default function RotatingPanel({ competitionId, regs, reloadCompetition }
               </thead>
               <tbody>
                 {board.map((p, i) => (
-                  <tr key={p.registration_id} className="border-t border-slate-800/60"
-                    data-testid={`lb-row-${p.registration_id}`}>
+                  <tr key={p.registration_id} data-testid={`lb-row-${p.registration_id}`}
+                    className={`border-t border-slate-800/60 ${p.retired ? "opacity-40" : ""}`}>
                     <td className="px-4 py-3 font-mono">
-                      {i === 0 ? <Crown className="w-4 h-4 text-amber-400" />
-                        : i < 3 ? <Medal className="w-4 h-4 text-slate-400" />
-                          : i + 1}
+                      {p.retired ? <HeartCrack className="w-4 h-4 text-red-400"/>
+                        : i === 0 ? <Crown className="w-4 h-4 text-amber-400" />
+                          : i < 3 ? <Medal className="w-4 h-4 text-slate-400" />
+                            : i + 1}
                     </td>
-                    <td className="px-4 py-3 font-semibold">{p.name}</td>
+                    <td className="px-4 py-3 font-semibold flex items-center gap-2">
+                      <span className={p.retired ? "line-through" : ""}>{p.name}</span>
+                      {p.retired && <Badge className="bg-red-500/20 text-red-300 border border-red-500/40 text-[10px]">
+                        {p.retired_by_partner ? "LEVADO PELO PARCEIRO" : p.retired_reason === "estafe" ? "ESTAFE" : p.retired_reason === "outro" ? "OUT" : "CONTUSÃO"}
+                      </Badge>}
+                    </td>
                     <td className="px-4 py-3 text-right font-mono text-emerald-300">{p.points}</td>
                     <td className="px-4 py-3 text-right font-mono">{p.wins}</td>
                     <td className="px-4 py-3 text-right font-mono text-slate-400">{p.matches}</td>
@@ -194,35 +239,147 @@ export default function RotatingPanel({ competitionId, regs, reloadCompetition }
           </div>
         </section>
       )}
+
+      <RetireDialog open={retireOpen} onOpenChange={setRetireOpen} ctx={retireCtx} onConfirm={doRetire}/>
     </div>
   );
 }
 
-function MatchRow({ m, onSave, label }) {
+function MatchRow({ m, onSave, onRetire, teamById, boardByReg, label }) {
   const [a, setA] = useState(m.score_a);
   const [b, setB] = useState(m.score_b);
-  useEffect(() => { setA(m.score_a); setB(m.score_b); }, [m.score_a, m.score_b]);
+  const [winner, setWinner] = useState(m.winner || null);
+  useEffect(() => { setA(m.score_a); setB(m.score_b); setWinner(m.winner || null); }, [m.score_a, m.score_b, m.winner]);
+
+  const isTie = Number(a) === Number(b) && Number(a) > 0;
+  const needsManualWinner = isTie && !winner;
+
+  const teamPoints = (teamId) => {
+    const t = teamById[teamId]; if (!t) return 0;
+    return (t.source_registration_ids || [])
+      .reduce((sum, rid) => sum + (boardByReg[rid]?.points || 0), 0);
+  };
+  const suggestByCampaign = () => {
+    const pa = teamPoints(m.team_a_id) - Number(a); // exclude current
+    const pb = teamPoints(m.team_b_id) - Number(b);
+    if (pa === pb) { toast.error("Campanhas empatadas — escolha manualmente"); return; }
+    setWinner(pa > pb ? "A" : "B");
+    toast.success(`Sugestão: Time ${pa > pb ? "A" : "B"} (mais pontos na campanha)`);
+  };
 
   return (
     <div data-testid={`rot-match-${m.match_id}`} className="bg-slate-900/80 border border-slate-800 rounded-xl overflow-hidden">
-      {label && <div className="text-[10px] font-mono uppercase tracking-widest text-slate-500 px-3 pt-2">{label}</div>}
-      <SideRow name={m.team_a_name} score={a} setScore={setA} winner={m.winner === "A"} />
+      {label && <div className="text-[10px] font-mono uppercase tracking-widest text-slate-500 px-3 pt-2 flex justify-between">
+        <span>{label}</span>
+        <button onClick={() => onRetire(m)} data-testid={`retire-btn-${m.match_id}`}
+          className="text-red-400 hover:text-red-300 flex items-center gap-1 text-[10px]">
+          <HeartCrack className="w-3 h-3"/> Retirar jogador
+        </button>
+      </div>}
+      <SideRow name={m.team_a_name} score={a} setScore={setA}
+        winner={winner === "A"} loser={winner === "B"} tie={isTie}
+        onClick={() => isTie && setWinner("A")} clickable={isTie} testid={`side-a-${m.match_id}`}/>
       <div className="h-px bg-slate-800" />
-      <SideRow name={m.team_b_name} score={b} setScore={setB} winner={m.winner === "B"} />
+      <SideRow name={m.team_b_name} score={b} setScore={setB}
+        winner={winner === "B"} loser={winner === "A"} tie={isTie}
+        onClick={() => isTie && setWinner("B")} clickable={isTie} testid={`side-b-${m.match_id}`}/>
+      {needsManualWinner && (
+        <div className="px-3 py-2 border-t border-amber-500/30 bg-amber-500/10 text-amber-200 text-xs" data-testid={`tie-warn-${m.match_id}`}>
+          <div className="flex items-center gap-1.5 mb-1.5"><AlertTriangle className="w-3 h-3"/> Placar empatado — defina o vencedor</div>
+          <button onClick={suggestByCampaign} data-testid={`tie-suggest-${m.match_id}`}
+            className="inline-flex items-center gap-1 text-emerald-300 hover:text-emerald-200 underline text-[11px]">
+            <Sparkles className="w-3 h-3"/> Sugerir pela melhor campanha
+          </button>
+        </div>
+      )}
+      {!label && (
+        <button onClick={() => onRetire(m)} data-testid={`retire-btn-${m.match_id}`}
+          className="w-full px-3 py-1.5 border-t border-slate-800 text-red-400 hover:bg-red-950/30 text-[11px] flex items-center justify-center gap-1">
+          <HeartCrack className="w-3 h-3"/> Retirar jogador
+        </button>
+      )}
       <div className="p-2 border-t border-slate-800 bg-slate-900">
-        <Button size="sm" onClick={() => onSave(m, a, b)} data-testid={`rot-save-${m.match_id}`}
-          className="w-full h-8 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold">
-          <Save className="w-3 h-3 mr-1" /> Salvar placar
+        <Button size="sm" onClick={() => onSave(m, a, b, winner)}
+          disabled={needsManualWinner} data-testid={`rot-save-${m.match_id}`}
+          className="w-full h-8 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold disabled:opacity-40">
+          <Save className="w-3 h-3 mr-1" /> {needsManualWinner ? "Defina o vencedor" : "Salvar placar"}
         </Button>
       </div>
     </div>
   );
 }
 
-const SideRow = ({ name, score, setScore, winner }) => (
-  <div className={`flex justify-between items-center px-3 py-2 ${winner ? "bg-emerald-500/10" : ""}`}>
-    <span className={`text-sm truncate flex-1 ${winner ? "text-emerald-300 font-semibold" : "text-slate-300"}`}>{name}</span>
-    <Input type="number" value={score} onChange={e => setScore(e.target.value)}
+const SideRow = ({ name, score, setScore, winner, loser, tie, onClick, clickable, testid }) => (
+  <div onClick={onClick} data-testid={testid}
+    className={`flex justify-between items-center px-3 py-2 ${winner ? "bg-emerald-500/10" : loser ? "bg-slate-950/50" : ""} ${clickable ? "cursor-pointer hover:bg-slate-800/60" : ""}`}>
+    <span className={`text-sm truncate flex-1 ${winner ? "text-emerald-300 font-semibold" : loser ? "text-slate-500" : "text-slate-300"}`}>
+      {tie && !winner && !loser && <span className="text-amber-400 mr-1">◉</span>}
+      {name}
+    </span>
+    <Input type="number" value={score} onChange={e => setScore(e.target.value)} onClick={e => e.stopPropagation()}
       className="w-14 h-8 bg-slate-800 border-slate-700 text-slate-100 text-center font-mono" />
   </div>
 );
+
+function RetireDialog({ open, onOpenChange, ctx, onConfirm }) {
+  const [reg, setReg] = useState("");
+  const [reason, setReason] = useState("contusao");
+  const [notes, setNotes] = useState("");
+  useEffect(() => { if (open) { setReg(""); setReason("contusao"); setNotes(""); } }, [open]);
+  if (!ctx) return null;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-md" data-testid="retire-dialog">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><HeartCrack className="w-5 h-5 text-red-400"/> Retirar jogador</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <p className="text-sm text-slate-400">
+            O jogador será desclassificado e o parceiro de dupla desta partida também sai do torneio.
+          </p>
+          <div>
+            <Label>Jogador que se retira</Label>
+            <Select value={reg} onValueChange={setReg}>
+              <SelectTrigger data-testid="retire-player-select" className="bg-slate-800 border-slate-700"><SelectValue placeholder="Selecione..."/></SelectTrigger>
+              <SelectContent className="bg-slate-900 border-slate-800 text-slate-100">
+                {ctx.players.map(p => (
+                  <SelectItem key={p.reg_id} value={p.reg_id}>{p.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Motivo</Label>
+            <RadioGroup value={reason} onValueChange={setReason} className="flex gap-3 mt-2">
+              {[
+                { v: "contusao", l: "Contusão" },
+                { v: "estafe", l: "Estafe" },
+                { v: "outro", l: "Outro" },
+              ].map(o => (
+                <label key={o.v} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                  <RadioGroupItem value={o.v} data-testid={`retire-reason-${o.v}`}/>
+                  {o.l}
+                </label>
+              ))}
+            </RadioGroup>
+          </div>
+          <div>
+            <Label>Observações (opcional)</Label>
+            <Input value={notes} onChange={e => setNotes(e.target.value)} data-testid="retire-notes"
+              className="bg-slate-800 border-slate-700"/>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)} variant="outline" className="border-slate-700 hover:bg-slate-800">
+            Cancelar
+          </Button>
+          <Button onClick={() => onConfirm(reg, reason, notes)} disabled={!reg}
+            data-testid="retire-confirm"
+            className="bg-red-500 hover:bg-red-400 text-slate-950 font-bold">
+            Confirmar retirada
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

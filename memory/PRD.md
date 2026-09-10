@@ -47,6 +47,8 @@ Transformar o ArenaHub em uma plataforma B2B SaaS multi-tenant. Cada admin/clien
 - **Toggle Mensal/Anual** em `/planos` com selo "2 meses grátis" no anual + banner "Economize R$ 98 por ano" no card.
 - **Recuperação de senha via Resend** (`/api/auth/forgot-password` + `/api/auth/reset-password`, páginas `/esqueci-senha` e `/redefinir-senha`): token com expiração de 1 hora armazenado em `password_reset_tokens`, ok:true sem vazar existência de e-mail, sessões invalidadas ao redefinir.
 - **Formato "Duplas Rotativas" (Rei da Praia)**: cadastro individual, grupos de 4 jogadores × 3 rodadas com todas as combinações de duplas, pontuação individual acumulada (soma do placar do time), top-2 por grupo avança, eliminatória com re-sorteio de duplas a cada rodada. Novo painel `RotatingPanel` + endpoints `/rotating/draw-groups`, `/rotating/groups`, `/rotating/leaderboard`, `/rotating/next-knockout-round`.
+- **Empate/Vencedor manual**: em `duplas_rotativas` placares empatados bloqueiam o salvar até o admin escolher o vencedor manualmente (clique no time ou sugestão automática pela melhor campanha em pontos).
+- **Retirada de jogador (contusão/estafe)**: endpoint `/matches/{id}/retire-player` marca o jogador + o companheiro daquela dupla como `retired`. Retirados vão pro fim do ranking e são excluídos da fase eliminatória.
 - Testes: 21/21 SaaS backend + 8/8 SaaS frontend + 7/7 password reset backend + 4/4 password reset frontend + 9/9 rotativas backend + 3/3 rotativas frontend.
 
 ## Backlog (P1)

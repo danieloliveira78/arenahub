@@ -21,7 +21,7 @@ export const ShareButtons = ({ url, text, dataTestidPrefix = "share" }) => {
   const native = async () => {
     if (navigator.share) {
       try { await navigator.share({ text, url: shareUrl }); }
-      catch {}
+      catch (e) { console.warn("navigator.share cancelled/failed:", e); }
     } else {
       copy();
     }

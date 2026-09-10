@@ -368,6 +368,11 @@ class MatchScoreUpdate(BaseModel):
     score_b: int
     winner: Optional[Literal["A", "B"]] = None
 
+class RetirePlayerRequest(BaseModel):
+    registration_id: str
+    reason: Literal["contusao", "estafe", "outro"] = "contusao"
+    notes: Optional[str] = ""
+
 # ---------------- Auth Routes ----------------
 @api_router.post("/auth/session")
 async def create_session(body: SessionRequest, response: Response):
@@ -983,14 +988,14 @@ async def admin_refund(session_id: str, admin=Depends(require_admin)):
     _admin_owns_or_raise(admin, tx, "transação")
     if tx.get("payment_status") != "paid":
         raise HTTPException(400, "Transação não está paga (não é possível reembolsar)")
-        payment_intent = tx.get("stripe_payment_intent_id")
-        if not payment_intent:
-            # Try to fetch from session
-            try:
-                s = stripe.checkout.Session.retrieve(session_id)
-                payment_intent = s.payment_intent
-            except stripe.error.StripeError as e:
-                raise HTTPException(500, f"Erro Stripe: {e}")
+    payment_intent = tx.get("stripe_payment_intent_id")
+    if not payment_intent:
+        # Try to fetch from session
+        try:
+            s = stripe.checkout.Session.retrieve(session_id)
+            payment_intent = s.payment_intent
+        except stripe.error.StripeError as e:
+            raise HTTPException(500, f"Erro Stripe: {e}")
     if not payment_intent:
         raise HTTPException(400, "PaymentIntent não localizado")
     try:
@@ -1516,6 +1521,8 @@ GROUP_COMBOS_OF_4 = [((0, 1), (2, 3)), ((0, 2), (1, 3)), ((0, 3), (1, 2))]
 async def _rotating_leaderboard_data(competition_id: str) -> list:
     matches = await db.matches.find({"competition_id": competition_id}, {"_id": 0}).to_list(2000)
     teams = await db.teams.find({"competition_id": competition_id}, {"_id": 0}).to_list(2000)
+    regs = await db.registrations.find({"competition_id": competition_id}, {"_id": 0}).to_list(500)
+    reg_by_id = {r["registration_id"]: r for r in regs}
     team_by_id = {t["team_id"]: t for t in teams}
     scores = {}  # reg_id -> {name, points, wins, matches}
     for m in matches:
@@ -1523,17 +1530,25 @@ async def _rotating_leaderboard_data(competition_id: str) -> list:
             team = team_by_id.get(m.get(key_id))
             if not team:
                 continue
-            regs = team.get("source_registration_ids", []) or []
+            src_regs = team.get("source_registration_ids", []) or []
             names = team.get("players", []) or []
             score = m.get(f"score_{side.lower()}", 0) or 0
-            for reg_id, name in zip(regs, names):
+            for reg_id, name in zip(src_regs, names):
                 s = scores.setdefault(reg_id, {"name": name, "points": 0, "wins": 0, "matches": 0})
                 s["points"] += score
                 s["matches"] += 1
                 if m.get("winner") == side:
                     s["wins"] += 1
-    board = [{"registration_id": k, **v} for k, v in scores.items()]
-    board.sort(key=lambda x: (-x["points"], -x["wins"], x["name"]))
+    board = []
+    for k, v in scores.items():
+        r = reg_by_id.get(k) or {}
+        board.append({
+            "registration_id": k, **v,
+            "retired": bool(r.get("retired")),
+            "retired_reason": r.get("retired_reason"),
+            "retired_by_partner": bool(r.get("retired_by_partner")),
+        })
+    board.sort(key=lambda x: (x["retired"], -x["points"], -x["wins"], x["name"]))
     return board
 
 def _make_team(competition_id: str, tenant_id: str, players: list) -> dict:
@@ -1637,14 +1652,16 @@ async def rotating_next_round(competition_id: str, admin=Depends(require_admin))
                   await db.registrations.find({"competition_id": competition_id}, {"_id": 0}).to_list(500)}
 
     if not knockout_matches:
-        # First knockout round: top-2 per group by individual leaderboard
+        # First knockout round: top-2 per group by individual leaderboard, skipping retired players
         board = await _rotating_leaderboard_data(competition_id)
         board_by_reg = {p["registration_id"]: p for p in board}
         groups = await db.groups.find({"competition_id": competition_id}, {"_id": 0}).sort("name", 1).to_list(100)
         qualifiers = []
         for g in groups:
+            active = [rid for rid in g.get("player_reg_ids", [])
+                      if not board_by_reg.get(rid, {}).get("retired")]
             ranked = sorted(
-                g.get("player_reg_ids", []),
+                active,
                 key=lambda rid: (-board_by_reg.get(rid, {}).get("points", 0),
                                  -board_by_reg.get(rid, {}).get("wins", 0)),
             )
@@ -1662,6 +1679,12 @@ async def rotating_next_round(competition_id: str, admin=Depends(require_admin))
         qualifiers = []
         for t in winners_teams:
             qualifiers.extend(t.get("source_registration_ids", []) or [])
+        # Filter out retired players (may have retired during the KO round)
+        retired_map = await db.registrations.find(
+            {"registration_id": {"$in": qualifiers}, "retired": True}, {"_id": 0, "registration_id": 1}
+        ).to_list(500)
+        retired_ids = {r["registration_id"] for r in retired_map}
+        qualifiers = [q for q in qualifiers if q not in retired_ids]
         round_num = current_round + 1
 
     if len(qualifiers) < 4:
@@ -1695,6 +1718,53 @@ async def rotating_next_round(competition_id: str, admin=Depends(require_admin))
     await db.teams.insert_many([{**t} for t in teams_docs])
     await db.matches.insert_many([{**m} for m in matches_docs])
     return {"round": round_num, "matches": len(matches_docs), "phase": "knockout"}
+
+@api_router.post("/competitions/{competition_id}/matches/{match_id}/retire-player")
+async def retire_player(competition_id: str, match_id: str, body: RetirePlayerRequest,
+                        admin=Depends(require_admin)):
+    """Mark a player as retired (contusão/estafe/outro) — the partner in this match
+    is also disqualified. Retired regs are excluded from future knockout rounds."""
+    comp = await db.competitions.find_one({"competition_id": competition_id}, {"_id": 0})
+    _admin_owns_or_raise(admin, comp, "torneio")
+    m = await db.matches.find_one({"match_id": match_id, "competition_id": competition_id}, {"_id": 0})
+    if not m:
+        raise HTTPException(404, "Partida não encontrada")
+
+    # Find the team the player belongs to in this match
+    teams = await db.teams.find(
+        {"team_id": {"$in": [m.get("team_a_id"), m.get("team_b_id")]}}, {"_id": 0}
+    ).to_list(4)
+    partner_reg_id = None
+    for t in teams:
+        regs = t.get("source_registration_ids") or []
+        if body.registration_id in regs:
+            for r in regs:
+                if r != body.registration_id:
+                    partner_reg_id = r
+                    break
+            break
+    if partner_reg_id is None and not any(body.registration_id in (t.get("source_registration_ids") or []) for t in teams):
+        raise HTTPException(400, "Jogador não faz parte desta partida")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    reg_ids = [body.registration_id] + ([partner_reg_id] if partner_reg_id else [])
+    await db.registrations.update_many(
+        {"registration_id": {"$in": reg_ids}},
+        {"$set": {
+            "retired": True,
+            "retired_at": now_iso,
+            "retired_reason": body.reason,
+            "retired_notes": body.notes or "",
+            "retired_via_match_id": match_id,
+        }},
+    )
+    # Also flag which one was the partner "levado junto"
+    if partner_reg_id:
+        await db.registrations.update_one(
+            {"registration_id": partner_reg_id},
+            {"$set": {"retired_by_partner": True, "retired_partner_reg_id": body.registration_id}},
+        )
+    return {"ok": True, "retired": reg_ids}
 
 @api_router.get("/competitions/{competition_id}/matches")
 async def list_matches(competition_id: str):
