@@ -13,7 +13,7 @@ const Navbar = () => {
   const [tenantInfo, setTenantInfo] = useState(null);
 
   useEffect(() => {
-    if (!user) { setTenantInfo(null); return; }
+    if (!user || user.account_type === "athlete") { setTenantInfo(null); return; }
     api.get("/me/tenant").then(({data}) => setTenantInfo(data)).catch(()=>{});
   }, [user]);
 

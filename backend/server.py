@@ -230,20 +230,21 @@ def _can_write(tenant: dict) -> bool:
     return st in ("trialing", "active", "grace_period")
 
 async def resolve_principal(user=Depends(get_current_user)):
-    """Attach effective tenant + subscription status. Auto-creates tenant if missing."""
+    """Attach effective tenant + subscription status. Auto-creates tenant if missing.
+    Athlete accounts (account_type='athlete') do NOT get an auto-provisioned tenant."""
     tenant = None
     if user.get("tenant_id"):
         tenant = await _get_tenant(user["tenant_id"])
-    if not tenant:
-        # Auto-provision default tenant on first authenticated call (Google OAuth path)
+    if not tenant and user.get("account_type") != "athlete":
+        # Auto-provision default tenant on first authenticated call (legacy Google OAuth path / admins)
         tenant = await _create_tenant(user["user_id"], user.get("name") or user.get("email") or "Meu clube")
         await db.users.update_one({"user_id": user["user_id"]},
                                   {"$set": {"tenant_id": tenant["tenant_id"], "tenant_role": "admin"}})
         user["tenant_id"] = tenant["tenant_id"]
         user["tenant_role"] = "admin"
     user["_tenant"] = tenant
-    user["_effective_status"] = _sub_effective_status(tenant)
-    user["_can_write"] = _can_write(tenant)
+    user["_effective_status"] = _sub_effective_status(tenant) if tenant else "athlete"
+    user["_can_write"] = _can_write(tenant) if tenant else False
     return user
 
 async def require_active_subscription(user=Depends(resolve_principal)):
@@ -285,7 +286,8 @@ class SignupRequest(BaseModel):
     email: str
     phone: Optional[str] = ""
     password: str
-    organization_name: str
+    organization_name: Optional[str] = ""
+    account_type: Literal["athlete", "admin"] = "admin"
     accept_terms: bool = True
     accept_privacy: bool = True
 
@@ -453,24 +455,32 @@ async def signup(body: SignupRequest, response: Response):
         raise HTTPException(400, "Senha muito curta (mínimo 6 caracteres)")
     if not body.accept_terms or not body.accept_privacy:
         raise HTTPException(400, "É necessário aceitar os termos e a política")
+    if body.account_type == "admin" and not (body.organization_name or "").strip():
+        raise HTTPException(400, "Nome da organização é obrigatório para admins")
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
         raise HTTPException(400, "E-mail já cadastrado")
 
     user_id = f"user_{uuid.uuid4().hex[:12]}"
     platform_role = "super_admin" if email == OWNER_EMAIL else None
-    await db.users.insert_one({
+    is_athlete = body.account_type == "athlete"
+    user_doc = {
         "user_id": user_id, "email": email, "name": body.name.strip(),
         "phone": body.phone or "",
         "password_hash": hash_password(body.password),
-        "is_admin": True, "tenant_role": "admin",
+        "account_type": body.account_type,
+        "is_admin": not is_athlete,
+        "tenant_role": None if is_athlete else "admin",
         "platform_role": platform_role,
         "picture": "",
         "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-    tenant = await _create_tenant(user_id, body.organization_name or body.name)
-    await db.users.update_one({"user_id": user_id},
-                              {"$set": {"tenant_id": tenant["tenant_id"]}})
+    }
+    await db.users.insert_one(user_doc)
+    tenant = None
+    if not is_athlete:
+        tenant = await _create_tenant(user_id, body.organization_name or body.name)
+        await db.users.update_one({"user_id": user_id},
+                                  {"$set": {"tenant_id": tenant["tenant_id"]}})
 
     # Create session
     session_token = f"sess_{uuid.uuid4().hex}"
